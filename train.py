@@ -1,5 +1,4 @@
 import torch
-import torch.utils.data as data
 import os
 import warnings
 from time import time
@@ -8,15 +7,13 @@ from networks.dunet import Dunet
 from networks.linknet import LinkNet34
 from networks.dlinknet import DinkNet34, DinkNet50, DinkNet101, DinkNet34_less_pool
 from networks.nllinknet import NL34_LinkNet
-from networks.windvitnet import ViTRoad
 from networks.SETR import SETR
 from networks.Unet3plus import UNet_3Plus
 from networks.SegNet import SegNet
-
+from networks.SWATNet import build_road_SWATNet
 from framework import MyFrame
 from loss import dice_bce_loss
 from data import DeepGlobeDataset, RoadDataset
-from networks.SWATNet import build_road_SWATNet
 import csv
 warnings.filterwarnings("ignore")
 
