@@ -51,14 +51,12 @@ class IOUMetric:
 class AccuracyIndex():
     
     def __init__(self, label:np.array, pred:np.array) -> None:
-        # self.hist = self.fast_hist(label, pred, 2)
         self.Iand = np.sum(label*pred) 
         self.Ior = np.sum(label) + np.sum(pred) - self.Iand
         self.pix_count = label.shape[-1] * label.shape[-2] 
         self.label_count = np.sum(label)
         self.pred_count = np.sum(pred)
         self.smooth_factor = 1e-10
-
 
     def get_accuracy(self):
         acc = (self.pix_count - self.Ior + self.Iand)/self.pix_count
@@ -107,8 +105,6 @@ def get_massroad_testset(img_size):
 def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_output_mask = True):
     labels = []
     predicts = []
-    # img_path = "eval_example/104_sat.jpg"
-    # label_path = "eval_example/104_mask.png"
     model_name = model_name
     dataset_name = str(dataset_method.__name__).split('_')[1]
     save_path = f'results/{model_name}_{dataset_name}/'
@@ -136,14 +132,11 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
     
     # 加载模型
     solver = MyFrame(net, dice_bce_loss, 2e-4)
-    # solver.load("weights/trainlog_WindVitNet_v1.pt")
-    solver.load(f"weights/{model_weigth}.pt")
+    solver.load(f"weights/{model_weigth}")
     
     # 加载数据集
     batchsize = 8
-    # dataset = get_deepglobe_testset(img_size)
     dataset = dataset_method(img_size)
-    # dataset = get_massroad_testset(img_size)
 
     data_loader = DataLoader(
         dataset,
@@ -194,11 +187,6 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
 
 
 def param_gflops_eval(model_name, img_size = 512):
-    
-    # pyprof.init()
-    # profiler.start()
-    # patch_row_num = 32
-    # dim = 192
     if model_name == 'SETR':
         net = SETR(num_classes=1, image_size=512, patch_size=512//16, dim=1024, depth = 24, heads = 16, mlp_dim = 2048, out_indices = (9, 14, 19, 23))
     elif model_name == 'SWATNet':
@@ -219,12 +207,6 @@ def param_gflops_eval(model_name, img_size = 512):
     net = net.cuda()
     input = torch.randn(1, 3, img_size, img_size).cuda()  
 
-    #评估模型参数量和计算量              
-    # flops, params = profile(net, inputs=(input, ))      
-    # print(flops,params) 
-    # flops,params = clever_format([flops, params],"%.3f")
-    # print(f'flops: {flops} , params: {params}')  
-
     # 分析FLOPs
     flops = FlopCountAnalysis(net, input)
     print("FLOPs: ", flops.total()/1000000000.0)
@@ -232,6 +214,5 @@ def param_gflops_eval(model_name, img_size = 512):
     print(params)
 
 if __name__ == '__main__':
-    # param_gflops_eval('SWATNet')
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    metrics_eval('UNet', get_deepglobe_testset, 'UNet_deepglobe_v1')
+    metrics_eval('UNet', get_deepglobe_testset, 'UNet_deepglobe_v1.pt')
