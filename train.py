@@ -16,7 +16,7 @@ from networks.SegNet import SegNet
 from framework import MyFrame
 from loss import dice_bce_loss
 from data import DeepGlobeDataset, RoadDataset
-from networks.sam import build_road_sam
+from networks.SWATNet import build_road_SWATNet
 import csv
 warnings.filterwarnings("ignore")
 
@@ -67,7 +67,7 @@ def train(model_name, dataset_method, img_size, batch_size, log_name, checkpoint
     if model_name == 'SETR':
         net = SETR(num_classes=1, image_size=512, patch_size=512//16, dim=1024, depth = 24, heads = 16, mlp_dim = 2048, out_indices = (9, 14, 19, 23))
     elif model_name == 'SWATNet':
-        net = build_road_sam(192, 6, img_size=img_size, encoder_depth = 12, decoder_depth = 12)
+        net = build_road_SWATNet(192, 6, img_size=img_size, encoder_depth = 12, decoder_depth = 12)
     elif model_name == 'DLinkNet':
         net = DinkNet34()
     elif model_name == 'NLLinkNet':

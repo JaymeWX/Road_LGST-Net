@@ -13,6 +13,10 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from .windvitnet import ShiftWindAttention
 
+
+def pair(t):
+    return t if isinstance(t, tuple) else (t, t)
+
 class LayerNorm2d(nn.Module):
     def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
         super().__init__()
@@ -91,6 +95,155 @@ class Attention(nn.Module):
 
         x = self.dropout(x)
         return x
+
+
+class ShiftWindAttention(nn.Module):
+    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0., win_size = 8, stride = [0, 4], patch_w_num = 32, qkv_bias = False):
+        super().__init__()
+        self.win_size = win_size
+        self.stride = stride
+        self.patch_w_num = patch_w_num
+        inner_dim = dim_head *  heads
+        project_out = not (heads == 1 and dim_head == dim)
+ 
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+ 
+        self.softmax = nn.Softmax(dim = -1)
+        self.dropout = nn.Dropout(dropout)
+ 
+        self.to_qkv = nn.Linear(dim, inner_dim * 3,  bias=qkv_bias)
+        self.qkv_pro = nn.Sequential(nn.GELU(), nn.Linear(inner_dim * 3, inner_dim * 3))
+ 
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(dropout)
+        ) if project_out else nn.Identity()
+        masks = []
+        for step in stride:
+            masks.append(self.get_mask(win_size, step))
+        masks = torch.stack(masks)
+        self.register_buffer("attn_masks", masks)
+        self.init_position_param(win_size)
+ 
+    def forward(self, x):
+        qkv = self.to_qkv(x)
+        qkv = self.qkv_pro(qkv).chunk(3, dim = -1)
+        # d = c * h
+        q, k, v = map(lambda t: rearrange(t, 'b (ph pw) d -> b ph pw d', pw = self.patch_w_num), qkv)
+        out_list = []
+        for index, shift_step in enumerate(self.stride):
+            out = self.cal_window(q, k, v, self.win_size, shift_step, self.attn_masks[index])
+            out_list.append(out)
+        out = torch.stack(out_list, dim = -1).mean(dim = -1)
+  
+        return self.to_out(out)
+
+
+    def cal_window(self, q, k, v, win_size, stride, mask):
+        BS, H, W, _ = q.shape #BH is batch size
+        win_num = (H//win_size)**2
+        qs = self.window_partition(q, win_size, stride)
+        ks = self.window_partition(k, win_size, stride)
+        vs = self.window_partition(v, win_size, stride)
+        nWb = qs.shape[0]
+        qs, ks, vs = map(lambda t: rearrange(t, 'nWb wh ww (h c) -> nWb h (wh ww) c', h = self.heads), [qs, ks, vs])
+        
+        dots = torch.matmul(qs, ks.transpose(-1, -2)) * self.scale
+
+        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
+            win_size * win_size, win_size * win_size, -1)  # Wh*Ww,Wh*Ww,nH
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
+        dots = dots + repeat(relative_position_bias, 'h c1 c2 -> nWb h c1 c2', nWb = nWb)
+
+        dots = dots + repeat(mask, 'wn c1 c2 -> (bs wn) h c1 c2', bs = BS, h = self.heads)
+        
+        attn = self.softmax(dots)
+        attn = self.dropout(attn)
+        out = torch.matmul(attn, vs)
+        out = self.window_reverse(out, win_size, H, W, stride)
+        out = rearrange(out, 'b h H W c -> b (H W) (h c)')
+        return out
+
+    def get_mask(self, window_size, shift_size):
+        H, W = pair(self.patch_w_num)
+        if shift_size > 0:
+            # calculate attention mask for SWA
+            img_mask = torch.zeros((1, H, W, 1))  # 1 H W 1
+            h_slices = (slice(0, -window_size),
+                        slice(-window_size, -shift_size),
+                        slice(-shift_size, None))
+            w_slices = (slice(0, -window_size),
+                        slice(-window_size, -shift_size),
+                        slice(-shift_size, None))
+            cnt = 0
+            for h in h_slices:
+                for w in w_slices:
+                    img_mask[:, h, w, :] = cnt
+                    cnt += 1
+
+            mask_windows = self.window_partition(img_mask, window_size)  # nW, window_size, window_size, 1
+            mask_windows = mask_windows.view(-1, window_size * window_size)
+            attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+            attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+        else:
+            attn_mask = torch.zeros(((H//window_size)**2, window_size * window_size, window_size * window_size))
+
+        return attn_mask
+    
+    def window_partition(self, x, window_size, shift = 0):
+        """
+        Args:
+            x: (B, H, W, C)
+            window_size (int): window size
+
+        Returns:
+            windows: (num_windows*B, window_size, window_size, C)
+        """
+        if shift > 0:
+            x = torch.roll(x, shifts=(-shift, -shift), dims=(1, 2)) 
+
+        B, H, W, C = x.shape
+        x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
+        windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
+        return windows
+
+    def window_reverse(self, windows, window_size, H, W, shift = 0):
+        """
+        Args:
+            windows: (num_windows*B, h, window_size*window_size, C)
+            window_size (int): Window size
+            H (int): Height of image
+            W (int): Width of image
+
+        Returns:
+            x: (B, H, W, C)
+        """
+        B = int(windows.shape[0] / (H * W / window_size / window_size))
+        x = rearrange(windows, '(b nWh nWw) h (wh ww) c -> b h (nWh wh) (nWw ww) c', b = B, nWh = H // window_size, wh = window_size)
+
+        if shift > 0:
+            x = torch.roll(x, shifts=(shift, shift), dims=(2, 3))
+        return x
+    
+    def init_position_param(self, win_size):
+        
+        # define a parameter table of relative position bias
+        self.relative_position_bias_table = nn.Parameter(
+            torch.zeros((2 * win_size - 1) * (2 * win_size - 1), self.heads))  # 2*Wh-1 * 2*Ww-1, nH
+
+        # get pair-wise relative position index for each token inside the window
+        coords_h = torch.arange(win_size)
+        coords_w = torch.arange(win_size)
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
+        coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
+        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
+        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
+        relative_coords[:, :, 0] += win_size - 1  # shift to start from 0
+        relative_coords[:, :, 1] += win_size - 1
+        relative_coords[:, :, 0] *= 2 * win_size - 1
+        relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
+        self.register_buffer("relative_position_index", relative_position_index)
 
 
 class Mlp(nn.Module):
@@ -195,7 +348,7 @@ def get_abs_pos(
         return abs_pos.reshape(1, h, w, -1)
 
 
-# Image encoder for efficient SAM.
+# Image encoder 
 class ImageEncoderViT(nn.Module):
     def __init__(
         self,
@@ -209,6 +362,7 @@ class ImageEncoderViT(nn.Module):
         mlp_ratio: float,
         neck_dims: List[int],
         act_layer: Type[nn.Module],
+        is_SWAT: bool = True,
     ) -> None:
         """
         Args:
@@ -237,7 +391,7 @@ class ImageEncoderViT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_positions, patch_embed_dim))
         self.blocks = nn.ModuleList()
         for i in range(depth):
-            vit_block = Block(patch_embed_dim, num_heads, mlp_ratio, True, patch_w_num=self.image_embedding_size)
+            vit_block = Block(patch_embed_dim, num_heads, mlp_ratio, True, patch_w_num=self.image_embedding_size, is_SWAT=is_SWAT)
             self.blocks.append(vit_block)
         self.neck = nn.Sequential(
             nn.Conv2d(
@@ -287,7 +441,8 @@ class ImageDecoderViT(nn.Module):
         num_heads: int,
         mlp_ratio: float,
         act_layer : nn.Module,
-        patch_w_num
+        patch_w_num,
+        is_SWAT = True
     ) -> None:
         """
         Args:
@@ -307,7 +462,7 @@ class ImageDecoderViT(nn.Module):
         
         self.blocks = nn.ModuleList()
         for i in range(depth):
-            vit_block = Block(patch_embed_dim, num_heads, mlp_ratio, True, act_layer = act_layer, patch_w_num = patch_w_num)
+            vit_block = Block(patch_embed_dim, num_heads, mlp_ratio, True, act_layer = act_layer, patch_w_num = patch_w_num, is_SWAT=is_SWAT)
             self.blocks.append(vit_block)
         
 
@@ -331,9 +486,6 @@ class ImageDecoderViT(nn.Module):
                 )
             )
             output_dim_after_upscaling = layer_dims
-        
-        # mlp_feature_list = [256, 512, ]
-        # self.output_layers2 = nn.ModuleList([Mlp() for ])
 
         self.head = nn.Sequential(Mlp(16,8,1), nn.Sigmoid())
 
@@ -342,7 +494,6 @@ class ImageDecoderViT(nn.Module):
         num_patches = x.shape[1]
         x = x.reshape(x.shape[0], num_patches * num_patches, x.shape[3])
         for index, blk in enumerate(self.blocks):
-            # print(f'VIT block module, layer {index}')
             x = blk(x)
         x = x.permute(0, 2, 1)
         x = x.reshape(x.shape[0], x.shape[1], num_patches, num_patches)
@@ -356,11 +507,10 @@ class ImageDecoderViT(nn.Module):
         x = self.head(x)
         x = x.permute(0, 2, 1)
         x = x.reshape(x.shape[0], x.shape[1], h, w)
-        # print(x.shape)
         return x
 
 
-class RoadSam(nn.Module):
+class SWATNet(nn.Module):
     mask_threshold: float = 0.0
     image_format: str = "RGB"
 
@@ -371,23 +521,8 @@ class RoadSam(nn.Module):
         pixel_mean: List[float] = [0.485, 0.456, 0.406],
         pixel_std: List[float] = [0.229, 0.224, 0.225],
     ) -> None:
-        """
-        SAM predicts object masks from an image and input prompts.
-
-        Arguments:
-          image_encoder (ImageEncoderViT): The backbone used to encode the
-            image into image embeddings that allow for efficient mask prediction.
-          prompt_encoder (PromptEncoder): Encodes various types of input prompts.
-          mask_decoder (MaskDecoder): Predicts masks from the image embeddings
-            and encoded prompts.
-          pixel_mean (list(float)): Mean values for normalizing pixels in the input image.
-          pixel_std (list(float)): Std values for normalizing pixels in the input image.
-        """
         super().__init__()
         self.image_encoder = image_encoder
-        # for param in  self.image_encoder.parameters():
-        #     param.requires_grad = False
-
         self.mask_decoder = mask_decoder
         self.register_buffer(
             "pixel_mean", torch.Tensor(pixel_mean).view(1, 3, 1, 1), False
@@ -398,41 +533,15 @@ class RoadSam(nn.Module):
 
 
     def get_image_embeddings(self, batched_images) -> torch.Tensor:
-        """
-        Predicts masks end-to-end from provided images and prompts.
-        If prompts are not known in advance, using SamPredictor is
-        recommended over calling the model directly.
-
-        Arguments:
-          batched_images: A tensor of shape [B, 3, H, W]
-        Returns:
-          List of image embeddings each of of shape [B, C(i), H(i), W(i)].
-          The last embedding corresponds to the final layer.
-        """
         batched_images = self.preprocess(batched_images)
         return self.image_encoder(batched_images)
 
     def forward(
         self,
         batched_images: torch.Tensor,
-        scale_to_original_image_size: bool = True,
+        # scale_to_original_image_size: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Predicts masks end-to-end from provided images and prompts.
-        If prompts are not known in advance, using SamPredictor is
-        recommended over calling the model directly.
-
-        Arguments:
-          batched_images: A tensor of shape [B, 3, H, W]
-          batched_points: A tensor of shape [B, num_queries, max_num_pts, 2]
-          batched_point_labels: A tensor of shape [B, num_queries, max_num_pts]
-
-        Returns:
-          A list tuples of two tensors where the ith element is by considering the first i+1 points.
-            low_res_mask: A tensor of shape [B, 256, 256] of predicted masks
-            iou_predictions: A tensor of shape [B, max_num_queries] of estimated IOU scores
-        """
-        batch_size, _, input_h, input_w = batched_images.shape
+        # batch_size, _, input_h, input_w = batched_images.shape
         # with torch.no_grad():
         image_embeddings = self.get_image_embeddings(batched_images)
         mask = self.mask_decoder(image_embeddings, batched_images)
@@ -452,13 +561,10 @@ class RoadSam(nn.Module):
         return (x - self.pixel_mean) / self.pixel_std
 
 
-def build_road_sam(encoder_patch_embed_dim, encoder_num_heads, img_size = 1024, encoder_depth = 12, decoder_depth = 12, checkpoint=None):
-    # img_size = 1024
+def build_road_SWATNet(encoder_patch_embed_dim, encoder_num_heads, img_size = 1024, encoder_depth = 12, decoder_depth = 12, checkpoint=None):
     encoder_patch_size = 16
-    # encoder_depth = encoder_depth
     encoder_mlp_ratio = 4.0
     encoder_neck_dims = [256, 256]
-    # decoder_depth = decoder_depth
     patch_w_num = img_size//encoder_patch_size
     activation = "gelu"
     normalization_type = "layer_norm"
@@ -496,11 +602,11 @@ def build_road_sam(encoder_patch_embed_dim, encoder_num_heads, img_size = 1024, 
         patch_w_num = patch_w_num
     )
 
-    sam = RoadSam(
+    swat_net = SWATNet(
         image_encoder=image_encoder,
         mask_decoder=image_decoder,
         pixel_mean=[0.485, 0.456, 0.406],
         pixel_std=[0.229, 0.224, 0.225],
     )
     
-    return sam
+    return swat_net
