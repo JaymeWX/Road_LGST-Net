@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from .windvitnet import ShiftWindAttention
+# from .windvitnet import ShiftWindAttention
 
 
 def pair(t):
