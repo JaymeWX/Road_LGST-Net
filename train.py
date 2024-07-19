@@ -12,7 +12,9 @@ from networks.Unet3plus import UNet_3Plus
 from networks.SegNet import SegNet
 from networks.SWATNet import build_road_SWATNet
 from networks.SWATNet_v2 import SWATNet as SWATNetV2
-from networks.SWATNet_dlink import DinkNet34 as SWATNetV3
+from networks.SWATNet_v3 import DinkNet34 as SWATNetV3
+from networks.SWATNet_v4 import DinkNet34 as SWATNetV4
+
 
 from framework import ModelContainer
 from loss import dice_bce_loss
@@ -65,6 +67,8 @@ def train(model_name, dataset_method, img_size, batch_size, log_name, checkpoint
         net = SWATNetV2(192, 6, img_size=img_size, encoder_depth = 6, decoder_depth = 6)
     elif model_name == 'SWATNetV3':
         net = SWATNetV3()
+    elif model_name == 'SWATNetV4':
+        net = SWATNetV4()
     elif model_name == 'NoSWATNet':
         net = build_road_SWATNet(192, 6, img_size=img_size, encoder_depth = 12, decoder_depth = 12, is_SWAT = False)
     elif model_name == 'DLinkNet':
@@ -126,10 +130,10 @@ def train(model_name, dataset_method, img_size, batch_size, log_name, checkpoint
 
 if __name__ == '__main__':
     #config 
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     # checkpoint = 'weights/dlinknet.pt'
     batchsize = 16
     img_size = 512
     # SWATNet NoSWATNet SETR DLinkNet NLLinkNet SWATNetV3
-    train('SWATNetV3', get_deepglobe_trainset, img_size = img_size, 
-          log_name='v2', batch_size=batchsize, checkpoint='weights/SWATNetV3_deepglobe_v1.pt')
+    train('SWATNetV4', get_deepglobe_trainset, img_size = img_size, 
+          log_name='v1_e11_d3', batch_size=batchsize)

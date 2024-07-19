@@ -9,7 +9,7 @@ from networks.unet import Unet
 from networks.SETR import SETR
 from networks.Unet3plus import UNet_3Plus
 from networks.SegNet import SegNet
-from networks.SWATNet_dlink import DinkNet34 as SWATNetV3
+from networks.SWATNet_v3 import DinkNet34 as SWATNetV3
 from data import DeepGlobeDataset, RoadDataset
 from torch.utils.data import DataLoader
 import csv
