@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
+from torchvision import models
 # from .windvitnet import ShiftWindAttention
 
 
@@ -306,6 +307,7 @@ class Block(nn.Module):
         self.mlp = Mlp(
             in_features=dim,
             hidden_features=mlp_hidden_dim,
+            out_features=dim,
             act_layer=act_layer,
         )
         self.dropout = nn.Dropout(dropout)
@@ -376,7 +378,7 @@ class ImageEncoderViT(nn.Module):
             patch_embed_dim (int): Patch embedding dimension.
             depth (int): Depth of ViT.
             num_heads (int): Number of attention heads in each ViT block.
-            mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+            mlp_ratio (float): Ratio of mlp hidden dim to embedding dim. 控制Block模块中最后MLP模块的中间隐藏层的维度
             act_layer (nn.Module): Activation layer.
         """
         super().__init__()
@@ -384,36 +386,20 @@ class ImageEncoderViT(nn.Module):
         self.img_size = img_size
         self.image_embedding_size = img_size // ((patch_size if patch_size > 0 else 1))
         self.transformer_output_dim = ([patch_embed_dim] + neck_dims)[-1]
-        self.pretrain_use_cls_token = True
-        pretrain_img_size = 224
+        self.pretrain_use_cls_token = False
+        # pretrain_img_size = 224
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, patch_embed_dim)
         # Initialize absolute positional embedding with pretrain image size.
-        num_patches = (pretrain_img_size // patch_size) * (
-            pretrain_img_size // patch_size
+        num_patches = (self.img_size // patch_size) * (
+            self.img_size // patch_size
         )
-        num_positions = num_patches + 1
+        num_positions = num_patches
         self.pos_embed = nn.Parameter(torch.zeros(1, num_positions, patch_embed_dim))
         self.blocks = nn.ModuleList()
         for i in range(depth):
             vit_block = Block(patch_embed_dim, num_heads, mlp_ratio, True, patch_w_num=self.image_embedding_size, is_SWAT=is_SWAT)
             self.blocks.append(vit_block)
-        self.neck = nn.Sequential(
-            nn.Conv2d(
-                patch_embed_dim,
-                neck_dims[0],
-                kernel_size=1,
-                bias=False,
-            ),
-            LayerNorm2d(neck_dims[0]),
-            nn.Conv2d(
-                neck_dims[0],
-                neck_dims[0],
-                kernel_size=3,
-                padding=1,
-                bias=False,
-            ),
-            LayerNorm2d(neck_dims[0]),
-        )
+        
         self.is_SWAT = is_SWAT
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -423,9 +409,8 @@ class ImageEncoderViT(nn.Module):
         x = self.patch_embed(x)
         # B C H W -> B H W C
         x = x.permute(0, 2, 3, 1)
-        x = x + get_abs_pos(
-            self.pos_embed, self.pretrain_use_cls_token, [x.shape[1], x.shape[2]]
-        )
+        pos_embedding = get_abs_pos(self.pos_embed, self.pretrain_use_cls_token, [x.shape[1], x.shape[2]])
+        x = x + pos_embedding
         num_patches = x.shape[1]
         assert x.shape[2] == num_patches
         if self.is_SWAT is not True:
@@ -434,7 +419,7 @@ class ImageEncoderViT(nn.Module):
             x = blk(x)
         if self.is_SWAT is not True:
             x = x.reshape(x.shape[0], num_patches, num_patches, x.shape[2])
-        x = self.neck(x.permute(0, 3, 1, 2))
+        # x = self.neck(x.permute(0, 3, 1, 2))
         return x
 
 
@@ -472,7 +457,7 @@ class ImageDecoderViT(nn.Module):
             self.blocks.append(vit_block)
         
 
-        output_dim_after_upscaling = 256
+        output_dim_after_upscaling = 192
         self.output_layers = nn.ModuleList([])
         for idx, layer_dims in enumerate(upscaling_layer_dims):
             self.output_layers.append(
@@ -497,7 +482,7 @@ class ImageDecoderViT(nn.Module):
         self.is_SWAT = is_SWAT
 
     def forward(self, x: torch.Tensor, batched_images: torch.Tensor) -> torch.Tensor:   #c*256*64*64
-        x = x.permute(0, 2, 3, 1)
+        # x = x.permute(0, 2, 3, 1)
         num_patches = x.shape[1]
         if self.is_SWAT is not True:
             x = x.reshape(x.shape[0], num_patches * num_patches, x.shape[3])
@@ -521,104 +506,153 @@ class ImageDecoderViT(nn.Module):
 
 
 class SWATNet(nn.Module):
-    mask_threshold: float = 0.0
-    image_format: str = "RGB"
+    #前面加个resnet试试
+    # mask_threshold: float = 0.0
+    # image_format: str = "RGB"
 
-    def __init__(
-        self,
-        image_encoder: ImageEncoderViT,
-        mask_decoder: ImageDecoderViT,
-        pixel_mean: List[float] = [0.485, 0.456, 0.406],
-        pixel_std: List[float] = [0.229, 0.224, 0.225],
+    def __init__(self, encoder_patch_embed_dim, encoder_num_heads, img_size = 1024, encoder_depth = 12, decoder_depth = 12, checkpoint=None, is_SWAT: bool = True,
+        encoder_patch_size = 16,
+        # pixel_mean: List[float] = [0.485, 0.456, 0.406],
+        # pixel_std: List[float] = [0.229, 0.224, 0.225],
     ) -> None:
         super().__init__()
-        self.image_encoder = image_encoder
-        self.mask_decoder = mask_decoder
-        self.register_buffer(
-            "pixel_mean", torch.Tensor(pixel_mean).view(1, 3, 1, 1), False
-        )
-        self.register_buffer(
-            "pixel_std", torch.Tensor(pixel_std).view(1, 3, 1, 1), False
-        )
+        encoder_mlp_ratio = 4.0
+        neck_dims = [192, 128, 192]
+        patch_w_num = img_size//encoder_patch_size
+        activation = "relu"
+        normalization_type = "layer_norm"
+
+        # resnet = models.resnet34(pretrained=True)
 
 
-    def get_image_embeddings(self, batched_images) -> torch.Tensor:
-        batched_images = self.preprocess(batched_images)
-        return self.image_encoder(batched_images)
+        assert activation == "relu" or activation == "gelu"
+        if activation == "relu":
+            activation_fn = nn.ReLU
+        else:
+            activation_fn = nn.GELU
+
+        self.encoder = ImageEncoderViT(img_size=img_size,
+                        patch_size=encoder_patch_size,
+                        in_chans=3,
+                        patch_embed_dim=encoder_patch_embed_dim,
+                        normalization_type=normalization_type,
+                        depth=encoder_depth,
+                        num_heads=encoder_num_heads,
+                        mlp_ratio=encoder_mlp_ratio,
+                        neck_dims=neck_dims,
+                        act_layer=activation_fn,
+                        is_SWAT=is_SWAT)
+
+        self.decoder = ImageDecoderViT(
+            patch_embed_dim=neck_dims[2],
+            depth=decoder_depth,
+            num_heads=4,
+            mlp_ratio=encoder_mlp_ratio,
+            act_layer=activation_fn,
+            patch_w_num = patch_w_num,
+            is_SWAT=is_SWAT
+        )
+
+        self.neck = nn.Sequential(
+            nn.Conv2d(
+                encoder_patch_embed_dim,
+                neck_dims[0],
+                kernel_size=1,
+                bias=False,
+            ),
+            LayerNorm2d(neck_dims[0]),
+            nn.Conv2d(
+                neck_dims[0],
+                neck_dims[1],
+                kernel_size=3,
+                padding=1,
+                bias=False,
+            ),
+            LayerNorm2d(neck_dims[1]),
+            nn.Conv2d(
+                neck_dims[1],
+                neck_dims[2],
+                kernel_size=3,
+                padding=1,
+                bias=False,
+            ),
+            LayerNorm2d(neck_dims[2]),
+        )
 
     def forward(
         self,
         batched_images: torch.Tensor,
         # scale_to_original_image_size: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # batch_size, _, input_h, input_w = batched_images.shape
-        # with torch.no_grad():
-        image_embeddings = self.get_image_embeddings(batched_images)
-        mask = self.mask_decoder(image_embeddings, batched_images)
+        
+        image_embeddings = self.encoder(batched_images)
+        image_embeddings = self.neck(image_embeddings.permute(0, 3, 1, 2))
+        image_embeddings = image_embeddings.permute(0, 2, 3, 1)
+        mask = self.decoder(image_embeddings, batched_images)
         return mask
 
-    def preprocess(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize pixel values and pad to a square input."""
-        if (
-            x.shape[2] != self.image_encoder.img_size
-            or x.shape[3] != self.image_encoder.img_size
-        ):
-            x = F.interpolate(
-                x,
-                (self.image_encoder.img_size, self.image_encoder.img_size),
-                mode="bilinear",
-            )
-        return (x - self.pixel_mean) / self.pixel_std
+    # def preprocess(self, x: torch.Tensor) -> torch.Tensor:
+    #     """Normalize pixel values and pad to a square input."""
+    #     if (
+    #         x.shape[2] != self.image_encoder.img_size
+    #         or x.shape[3] != self.image_encoder.img_size
+    #     ):
+    #         x = F.interpolate(
+    #             x,
+    #             (self.image_encoder.img_size, self.image_encoder.img_size),
+    #             mode="bilinear",
+    #         )
+    #     return (x - self.pixel_mean) / self.pixel_std
 
 
-def build_road_SWATNet(encoder_patch_embed_dim, encoder_num_heads, img_size = 1024, encoder_depth = 12, decoder_depth = 12, checkpoint=None, is_SWAT: bool = True):
-    encoder_patch_size = 32
-    encoder_mlp_ratio = 4.0
-    encoder_neck_dims = [256, 256]
-    patch_w_num = img_size//encoder_patch_size
-    activation = "gelu"
-    normalization_type = "layer_norm"
+# def build_road_SWATNet(encoder_patch_embed_dim, encoder_num_heads, img_size = 1024, encoder_depth = 12, decoder_depth = 12, checkpoint=None, is_SWAT: bool = True):
+#     encoder_patch_size = 32
+#     encoder_mlp_ratio = 4.0
+#     encoder_neck_dims = [256, 256]
+#     patch_w_num = img_size//encoder_patch_size
+#     activation = "gelu"
+#     normalization_type = "layer_norm"
 
-    assert activation == "relu" or activation == "gelu"
-    if activation == "relu":
-        activation_fn = nn.ReLU
-    else:
-        activation_fn = nn.GELU
+#     assert activation == "relu" or activation == "gelu"
+#     if activation == "relu":
+#         activation_fn = nn.ReLU
+#     else:
+#         activation_fn = nn.GELU
 
-    image_encoder = ImageEncoderViT(
-        img_size=img_size,
-        patch_size=encoder_patch_size,
-        in_chans=3,
-        patch_embed_dim=encoder_patch_embed_dim,
-        normalization_type=normalization_type,
-        depth=encoder_depth,
-        num_heads=encoder_num_heads,
-        mlp_ratio=encoder_mlp_ratio,
-        neck_dims=encoder_neck_dims,
-        act_layer=activation_fn,
-        is_SWAT=is_SWAT
-    )
-    if checkpoint is not None:
-        with open(checkpoint, "rb") as f:
-            state_dict = torch.load(f, map_location="cpu")
-        image_encoder.load_state_dict(state_dict)
+#     image_encoder = ImageEncoderViT(
+#         img_size=img_size,
+#         patch_size=encoder_patch_size,
+#         in_chans=3,
+#         patch_embed_dim=encoder_patch_embed_dim,
+#         normalization_type=normalization_type,
+#         depth=encoder_depth,
+#         num_heads=encoder_num_heads,
+#         mlp_ratio=encoder_mlp_ratio,
+#         neck_dims=encoder_neck_dims,
+#         act_layer=activation_fn,
+#         is_SWAT=is_SWAT
+#     )
+#     if checkpoint is not None:
+#         with open(checkpoint, "rb") as f:
+#             state_dict = torch.load(f, map_location="cpu")
+#         image_encoder.load_state_dict(state_dict)
 
         
-    image_decoder = ImageDecoderViT(
-        patch_embed_dim=encoder_neck_dims[0],
-        depth=decoder_depth,
-        num_heads=4,
-        mlp_ratio=encoder_mlp_ratio,
-        act_layer=activation_fn,
-        patch_w_num = patch_w_num,
-        is_SWAT=is_SWAT
-    )
+#     image_decoder = ImageDecoderViT(
+#         patch_embed_dim=encoder_neck_dims[0],
+#         depth=decoder_depth,
+#         num_heads=4,
+#         mlp_ratio=encoder_mlp_ratio,
+#         act_layer=activation_fn,
+#         patch_w_num = patch_w_num,
+#         is_SWAT=is_SWAT
+#     )
 
-    swat_net = SWATNet(
-        image_encoder=image_encoder,
-        mask_decoder=image_decoder,
-        pixel_mean=[0.485, 0.456, 0.406],
-        pixel_std=[0.229, 0.224, 0.225],
-    )
+#     swat_net = SWATNet(
+#         image_encoder=image_encoder,
+#         mask_decoder=image_decoder,
+#         pixel_mean=[0.485, 0.456, 0.406],
+#         pixel_std=[0.229, 0.224, 0.225],
+#     )
     
-    return swat_net
+#     return swat_net

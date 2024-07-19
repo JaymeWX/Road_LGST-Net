@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import warnings
-from framework import MyFrame
+from framework import ModelContainer
 from loss import dice_bce_loss
 from networks.dlinknet import DinkNet34
 from networks.nllinknet import NL34_LinkNet
@@ -9,6 +9,7 @@ from networks.unet import Unet
 from networks.SETR import SETR
 from networks.Unet3plus import UNet_3Plus
 from networks.SegNet import SegNet
+from networks.SWATNet_dlink import DinkNet34 as SWATNetV3
 from data import DeepGlobeDataset, RoadDataset
 from torch.utils.data import DataLoader
 import csv
@@ -116,6 +117,8 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
         net = SETR(num_classes=1, image_size=512, patch_size=512//16, dim=1024, depth = 24, heads = 16, mlp_dim = 2048, out_indices = (9, 14, 19, 23))
     elif model_name == 'SWATNet':
         net = build_road_sam(192, 6, img_size=img_size, encoder_depth = 12, decoder_depth = 12)
+    elif model_name == 'SWATNetV3':
+        net = SWATNetV3()
     elif model_name == 'DLinkNet':
         net = DinkNet34()
     elif model_name == 'NLLinkNet':
@@ -131,7 +134,7 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
         return
     
     # 加载模型
-    solver = MyFrame(net, dice_bce_loss, 2e-4)
+    solver = ModelContainer(net, dice_bce_loss, 2e-4)
     solver.load(f"weights/{model_weigth}")
     
     # 加载数据集
@@ -191,6 +194,8 @@ def param_gflops_eval(model_name, img_size = 512):
         net = SETR(num_classes=1, image_size=512, patch_size=512//16, dim=1024, depth = 24, heads = 16, mlp_dim = 2048, out_indices = (9, 14, 19, 23))
     elif model_name == 'SWATNet':
         net = build_road_sam(192, 6, img_size=img_size, encoder_depth = 12, decoder_depth = 12)
+    elif model_name == 'SWATNetV3':
+        net = SWATNetV3()
     elif model_name == 'DLinkNet':
         net = DinkNet34()
     elif model_name == 'NLLinkNet':
@@ -215,4 +220,4 @@ def param_gflops_eval(model_name, img_size = 512):
 
 if __name__ == '__main__':
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    metrics_eval('UNet', get_deepglobe_testset, 'UNet_deepglobe_v1.pt')
+    metrics_eval('SWATNetV3', get_deepglobe_testset, 'SWATNetV3_deepglobe_v1.pt')

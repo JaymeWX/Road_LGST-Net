@@ -11,7 +11,7 @@ class AttrDict(dict):
         super(AttrDict, self).__init__(*args, **kwargs)
         self.__dict__ = self
 
-class MyFrame():
+class ModelContainer():
     def __init__(self, net, loss, lr=2e-4, lr_end = 1e-6, epochs = 300, evalmode=False):
         self.net = net.cuda()
         # self.optimizer = Adam(params=self.net.parameters(), lr=lr)
