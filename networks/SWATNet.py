@@ -261,7 +261,7 @@ class Mlp(nn.Module):
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer()
+        self.act = act_layer
         self.fc2 = nn.Linear(hidden_features, out_features)
 
     def forward(self, x):
@@ -279,8 +279,8 @@ class Block(nn.Module):
         mlp_ratio=4.0,
         qkv_bias=False,
         qk_scale=None,
-        act_layer=nn.GELU,
-        dropout = 0.1,
+        act_layer=nn.GELU(),
+        dropout = 0.0,
         is_SWAT = True,
         patch_w_num = 0
     ):

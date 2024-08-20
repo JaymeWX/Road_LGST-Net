@@ -9,7 +9,10 @@ from networks.unet import Unet
 from networks.SETR import SETR
 from networks.Unet3plus import UNet_3Plus
 from networks.SegNet import SegNet
-from networks.SWATNet_v3 import DinkNet34 as SWATNetV3
+from networks.SWATNet_v3 import SWATNet as SWATNetV3
+from networks.SWATNet_v4 import SWATNet as SWATNetV4
+from networks.SWATNet_v5 import SWATNet as SWATNetV5
+from networks.SWATNet_v6 import SWATNet as SWATNetV6
 from data import DeepGlobeDataset, RoadDataset
 from torch.utils.data import DataLoader
 import csv
@@ -119,6 +122,12 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
         net = build_road_sam(192, 6, img_size=img_size, encoder_depth = 12, decoder_depth = 12)
     elif model_name == 'SWATNetV3':
         net = SWATNetV3()
+    elif model_name == 'SWATNetV4':
+        net = SWATNetV4()
+    elif model_name == 'SWATNetV5':
+        net = SWATNetV5()
+    elif model_name == 'SWATNetV6':
+        net = SWATNetV6()
     elif model_name == 'DLinkNet':
         net = DinkNet34()
     elif model_name == 'NLLinkNet':
@@ -176,8 +185,10 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
         accuracies.append(accuracy.get_accuracy())
         ious.append(accuracy.get_IOU())
     prec, recall, acc, iou = list(map(lambda x: sum(x)/len(x), [precisions, recalls, accuracies, ious]))
-    print(f'precision:{prec} recall:{recall} accuracy:{acc} iou:{iou}')
-
+    F1_ = 2*recall*prec/(recall+prec)
+    # print(f'F1:{F1_}')
+    print(f'recall:{recall} precision:{prec} F1:{F1_} accuracy:{acc} iou:{iou}')
+    
     # 评估
     el = IOUMetric()
     acc, acc_cls, iou, miou, fwavacc = el.evaluate(predicts, labels)
@@ -196,6 +207,8 @@ def param_gflops_eval(model_name, img_size = 512):
         net = build_road_sam(192, 6, img_size=img_size, encoder_depth = 12, decoder_depth = 12)
     elif model_name == 'SWATNetV3':
         net = SWATNetV3()
+    elif model_name == 'SWATNetV6':
+        net = SWATNetV6()
     elif model_name == 'DLinkNet':
         net = DinkNet34()
     elif model_name == 'NLLinkNet':
@@ -220,4 +233,5 @@ def param_gflops_eval(model_name, img_size = 512):
 
 if __name__ == '__main__':
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    metrics_eval('SWATNetV3', get_deepglobe_testset, 'SWATNetV3_deepglobe_v1.pt')
+    metrics_eval('SegNet', get_roadtrace_testset, 'SegNet_roadtrace__v1.pt')
+    # param_gflops_eval('SWATNetV6')

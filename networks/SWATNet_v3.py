@@ -107,9 +107,9 @@ class DinkNet34_less_pool(nn.Module):
         return F.sigmoid(out)
 
 
-class DinkNet34(nn.Module):
+class SWATNet(nn.Module):
     def __init__(self, num_classes=1, num_channels=3, is_swat = True):
-        super(DinkNet34, self).__init__()
+        super(SWATNet, self).__init__()
 
         filters = [64, 128, 256, 512]
         resnet = models.resnet34(pretrained=True)
@@ -156,37 +156,37 @@ class DinkNet34(nn.Module):
         x = self.firstrelu(x)
         x = self.firstmaxpool(x)
 
-        e1 = self.encoder1(x)
-        e1 = self.vit_ops(e1, self.vit_block_e1)
+        e1 = self.encoder1(x)  # H/4， W/4
+        e1 = self.vit_ops(e1, self.vit_block_e1) # H/4， W/4
         # e1 = rearrange(e1, 'B C H W -> B H W C')
         # e1 = self.vit_block1(e1)
         # e1 = rearrange(e1, 'B H W C -> B C H W')
 
-        e2 = self.encoder2(e1)
-        e2 = self.vit_ops(e2, self.vit_block_e2)
+        e2 = self.encoder2(e1) 
+        e2 = self.vit_ops(e2, self.vit_block_e2) # H/8， W/8
         # e2 = rearrange(e2, 'B C H W -> B H W C')
         # e2 = self.vit_block2(e2)
         # e2 = rearrange(e2, 'B H W C -> B C H W')
 
         e3 = self.encoder3(e2)
-        e3 = self.vit_ops(e3, self.vit_block_e3)
+        e3 = self.vit_ops(e3, self.vit_block_e3) # H/16， W/16
         # e3 = rearrange(e3, 'B C H W -> B H W C')
         # e3 = self.vit_block3(e3)
         # e3 = rearrange(e3, 'B H W C -> B C H W')
 
-        e4 = self.encoder4(e3)
+        e4 = self.encoder4(e3)  # H/32， W/32
 
         # Center
         # e4 = self.dblock(e4)
 
         # Decoder
-        d4 = self.decoder4(e4)
-        d4 = self.vit_ops(d4, self.vit_block_d4)
+        d4 = self.decoder4(e4) #+ e3
+        d4 = self.vit_ops(d4, self.vit_block_d4) 
 
-        d3 = self.decoder3(d4) 
+        d3 = self.decoder3(d4) #+ e2
         d3 = self.vit_ops(d3, self.vit_block_d3)
 
-        d2 = self.decoder2(d3) 
+        d2 = self.decoder2(d3) #+ e1
         d2 = self.vit_ops(d2, self.vit_block_d2)
 
         d1 = self.decoder1(d2)
