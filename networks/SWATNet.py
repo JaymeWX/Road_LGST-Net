@@ -1,36 +1,16 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
-import math
-from typing import List, Optional, Tuple, Type
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange, repeat
-# from .windvitnet import ShiftWindAttention
+from torchvision import models
 
+from functools import partial
+from networks.common import DecoderBlock
+from einops import rearrange, repeat
+
+nonlinearity = partial(F.relu, inplace=True)
 
 def pair(t):
     return t if isinstance(t, tuple) else (t, t)
-
-class LayerNorm2d(nn.Module):
-    def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(num_channels))
-        self.bias = nn.Parameter(torch.zeros(num_channels))
-        self.eps = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        u = x.mean(1, keepdim=True)
-        s = (x - u).pow(2).mean(1, keepdim=True)
-        x = (x - u) / torch.sqrt(s + self.eps)
-        x = self.weight[:, None, None] * x + self.bias[:, None, None]
-        return x
-
 
 class PatchEmbed(nn.Module):
     """2D Image to Patch Embedding"""
@@ -271,6 +251,7 @@ class Mlp(nn.Module):
         return x
 
 
+
 class Block(nn.Module):
     def __init__(
         self,
@@ -279,20 +260,27 @@ class Block(nn.Module):
         mlp_ratio=4.0,
         qkv_bias=False,
         qk_scale=None,
-        act_layer=nn.GELU(),
+        act_layer=nn.ReLU(inplace=True),
         dropout = 0.0,
         is_SWAT = True,
-        patch_w_num = 0
+        patch_w_num = 0,
+        win_size = 8,
+        stride = [0, 4],
+        has_bn = False #has batchnorm
     ):
         super().__init__()
-        self.norm1 = nn.LayerNorm(dim, eps=1e-6)
+        self.is_swat = is_SWAT
+        # self.norm1 = nn.LayerNorm(dim, eps=1e-6)
+        self.has_bn = has_bn
         if is_SWAT:
             self.attn = ShiftWindAttention(
                 dim,
                 heads = num_heads,
                 qkv_bias = qkv_bias,
                 patch_w_num = patch_w_num,
-                dropout = dropout
+                dropout = dropout,
+                win_size = win_size,
+                stride = stride
             )
         else:
             self.attn = Attention(
@@ -301,7 +289,7 @@ class Block(nn.Module):
                 qkv_bias = qkv_bias,
                 qk_scale = qk_scale,
             )
-        self.norm2 = nn.LayerNorm(dim, eps=1e-6)
+        # self.norm2 = nn.LayerNorm(dim, eps=1e-6)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
             in_features=dim,
@@ -309,316 +297,197 @@ class Block(nn.Module):
             act_layer=act_layer,
         )
         self.dropout = nn.Dropout(dropout)
+        if has_bn: self.batch_norm = nn.BatchNorm2d(dim)
 
     def forward(self, x):
-        x = x + self.attn(self.norm1(x))
+        if self.is_swat == False:
+            W = x.shape[1]
+            x = rearrange(x, 'B W H C -> B (W H) C')
+
+        x = x + self.attn(x)
         x = self.dropout(x)
-        x = x + self.mlp(self.norm2(x))
-        return x
-
-
-@torch.jit.export
-def get_abs_pos(
-    abs_pos: torch.Tensor, has_cls_token: bool, hw: List[int]
-) -> torch.Tensor:
-    """
-    Calculate absolute positional embeddings. If needed, resize embeddings and remove cls_token
-        dimension for the original embeddings.
-    Args:
-        abs_pos (Tensor): absolute positional embeddings with (1, num_position, C).
-        has_cls_token (bool): If true, has 1 embedding in abs_pos for cls token.
-        hw (Tuple): size of input image tokens.
-
-    Returns:
-        Absolute positional embeddings after processing with shape (1, H, W, C)
-    """
-    h = hw[0]
-    w = hw[1]
-    if has_cls_token:
-        abs_pos = abs_pos[:, 1:]
-    xy_num = abs_pos.shape[1]
-    size = int(math.sqrt(xy_num))
-    assert size * size == xy_num
-
-    if size != h or size != w:
-        new_abs_pos = F.interpolate(
-            abs_pos.reshape(1, size, size, -1).permute(0, 3, 1, 2),
-            size=(h, w),
-            mode="bicubic",
-            align_corners=False,
-        )
-        return new_abs_pos.permute(0, 2, 3, 1)
-    else:
-        return abs_pos.reshape(1, h, w, -1)
-
-
-# Image encoder 
-class ImageEncoderViT(nn.Module):
-    def __init__(
-        self,
-        img_size: int,
-        patch_size: int,
-        in_chans: int,
-        patch_embed_dim: int,
-        normalization_type: str,
-        depth: int,
-        num_heads: int,
-        mlp_ratio: float,
-        neck_dims: List[int],
-        act_layer: Type[nn.Module],
-        is_SWAT: bool = True,
-    ) -> None:
-        """
-        Args:
-            img_size (int): Input image size.
-            patch_size (int): Patch size.
-            in_chans (int): Number of input image channels.
-            patch_embed_dim (int): Patch embedding dimension.
-            depth (int): Depth of ViT.
-            num_heads (int): Number of attention heads in each ViT block.
-            mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
-            act_layer (nn.Module): Activation layer.
-        """
-        super().__init__()
-
-        self.img_size = img_size
-        self.image_embedding_size = img_size // ((patch_size if patch_size > 0 else 1))
-        self.transformer_output_dim = ([patch_embed_dim] + neck_dims)[-1]
-        self.pretrain_use_cls_token = True
-        pretrain_img_size = 224
-        self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, patch_embed_dim)
-        # Initialize absolute positional embedding with pretrain image size.
-        num_patches = (pretrain_img_size // patch_size) * (
-            pretrain_img_size // patch_size
-        )
-        num_positions = num_patches + 1
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_positions, patch_embed_dim))
-        self.blocks = nn.ModuleList()
-        for i in range(depth):
-            vit_block = Block(patch_embed_dim, num_heads, mlp_ratio, True, patch_w_num=self.image_embedding_size, is_SWAT=is_SWAT)
-            self.blocks.append(vit_block)
-        self.neck = nn.Sequential(
-            nn.Conv2d(
-                patch_embed_dim,
-                neck_dims[0],
-                kernel_size=1,
-                bias=False,
-            ),
-            LayerNorm2d(neck_dims[0]),
-            nn.Conv2d(
-                neck_dims[0],
-                neck_dims[0],
-                kernel_size=3,
-                padding=1,
-                bias=False,
-            ),
-            LayerNorm2d(neck_dims[0]),
-        )
-        self.is_SWAT = is_SWAT
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        assert (
-            x.shape[2] == self.img_size and x.shape[3] == self.img_size
-        ), "input image size must match self.img_size"
-        x = self.patch_embed(x)
-        # B C H W -> B H W C
-        x = x.permute(0, 2, 3, 1)
-        x = x + get_abs_pos(
-            self.pos_embed, self.pretrain_use_cls_token, [x.shape[1], x.shape[2]]
-        )
-        num_patches = x.shape[1]
-        assert x.shape[2] == num_patches
-        if self.is_SWAT is not True:
-            x = x.reshape(x.shape[0], num_patches * num_patches, x.shape[3])
-        for blk in self.blocks:
-            x = blk(x)
-        if self.is_SWAT is not True:
-            x = x.reshape(x.shape[0], num_patches, num_patches, x.shape[2])
-        x = self.neck(x.permute(0, 3, 1, 2))
-        return x
-
-
-# Image decoder for road detection.
-class ImageDecoderViT(nn.Module):
-    def __init__(
-        self,
-        patch_embed_dim: int,
-        depth: int,
-        num_heads: int,
-        mlp_ratio: float,
-        act_layer : nn.Module,
-        patch_w_num,
-        is_SWAT = True
-    ) -> None:
-        """
-        Args:
-            img_size (int): Input image size.
-            patch_size (int): Patch size.
-            in_chans (int): Number of input image channels.
-            patch_embed_dim (int): Patch embedding dimension.
-            depth (int): Depth of ViT.
-            num_heads (int): Number of attention heads in each ViT block.
-            mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
-            act_layer (nn.Module): Activation layer.
-        """
-        super().__init__()
-        upscaling_layer_dims = [128, 64, 32, 16]
-
-        # Initialize absolute positional embedding with pretrain image size.
+        x = x + self.mlp(x)
         
-        self.blocks = nn.ModuleList()
-        for i in range(depth):
-            vit_block = Block(patch_embed_dim, num_heads, mlp_ratio, True, act_layer = act_layer, patch_w_num = patch_w_num, is_SWAT=is_SWAT)
-            self.blocks.append(vit_block)
+        if self.is_swat == False:
+            x = rearrange(x, 'B (W H) C -> B W H C', W = W)
+
         
+        if self.has_bn:
+            x = rearrange(x, 'B W H C -> B C W H')
+            x = self.batch_norm(x)
+            x = rearrange(x, 'B C W H -> B W H C')
 
-        output_dim_after_upscaling = 256
-        self.output_layers = nn.ModuleList([])
-        for idx, layer_dims in enumerate(upscaling_layer_dims):
-            self.output_layers.append(
-                nn.Sequential(
-                    nn.ConvTranspose2d(
-                        output_dim_after_upscaling,
-                        layer_dims,
-                        kernel_size=2,
-                        stride=2,
-                    ),
-                    nn.GroupNorm(1, layer_dims)
-                    if idx < len(upscaling_layer_dims) - 1
-                    else nn.Identity(),
-                    act_layer() 
-                    if idx < len(upscaling_layer_dims) - 1
-                    else nn.Identity(),
-                )
-            )
-            output_dim_after_upscaling = layer_dims
-
-        self.head = nn.Sequential(Mlp(16,8,1), nn.Sigmoid())
-        self.is_SWAT = is_SWAT
-
-    def forward(self, x: torch.Tensor, batched_images: torch.Tensor) -> torch.Tensor:   #c*256*64*64
-        x = x.permute(0, 2, 3, 1)
-        num_patches = x.shape[1]
-        if self.is_SWAT is not True:
-            x = x.reshape(x.shape[0], num_patches * num_patches, x.shape[3])
-        for index, blk in enumerate(self.blocks):
-            x = blk(x)
-        if self.is_SWAT is not True:
-            x = x.reshape(x.shape[0], num_patches, num_patches, x.shape[2])
-        x = x.permute(0, 3, 1, 2)
-        # x = x.reshape(x.shape[0], x.shape[1], num_patches, num_patches)
-
-        for ids, output_layer in enumerate(self.output_layers):
-            x = output_layer(x)
-
-        b, c, h, w = x.shape
-        x = x.reshape(x.shape[0], x.shape[1],  x.shape[2]* x.shape[3])
-        x = x.permute(0, 2, 1)
-        x = self.head(x)
-        x = x.permute(0, 2, 1)
-        x = x.reshape(x.shape[0], x.shape[1], h, w)
         return x
 
 
+class BasicBlock(nn.Module):
+    def __init__(self, in_channel, out_channel) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channel, out_channel, kernel_size=(3,3), stride=1, padding=1)
+        self.norm1 = nn.BatchNorm2d(out_channel)
+        self.relu1 = nonlinearity
+        self.conv2 = nn.Conv2d(out_channel, out_channel, kernel_size=(3,3), stride=2, padding=1)
+        self.norm2 = nn.BatchNorm2d(out_channel)
+        
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.norm1(x)
+        x = self.relu1(x)
+        x = self.conv2(x)
+        x = self.norm2(x)
+        
+        return x
+
+SCALE_LIST = ['light', 'middle', 'large']
 class SWATNet(nn.Module):
-    mask_threshold: float = 0.0
-    image_format: str = "RGB"
+    def __init__(self, num_classes=1, is_swat = True, scale = SCALE_LIST[0]):
+        super(SWATNet, self).__init__()
 
-    def __init__(
-        self,
-        image_encoder: ImageEncoderViT,
-        mask_decoder: ImageDecoderViT,
-        pixel_mean: List[float] = [0.485, 0.456, 0.406],
-        pixel_std: List[float] = [0.229, 0.224, 0.225],
-    ) -> None:
-        super().__init__()
-        self.image_encoder = image_encoder
-        self.mask_decoder = mask_decoder
-        self.register_buffer(
-            "pixel_mean", torch.Tensor(pixel_mean).view(1, 3, 1, 1), False
-        )
-        self.register_buffer(
-            "pixel_std", torch.Tensor(pixel_std).view(1, 3, 1, 1), False
-        )
-
-
-    def get_image_embeddings(self, batched_images) -> torch.Tensor:
-        batched_images = self.preprocess(batched_images)
-        return self.image_encoder(batched_images)
-
-    def forward(
-        self,
-        batched_images: torch.Tensor,
-        # scale_to_original_image_size: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # batch_size, _, input_h, input_w = batched_images.shape
-        # with torch.no_grad():
-        image_embeddings = self.get_image_embeddings(batched_images)
-        mask = self.mask_decoder(image_embeddings, batched_images)
-        return mask
-
-    def preprocess(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize pixel values and pad to a square input."""
-        if (
-            x.shape[2] != self.image_encoder.img_size
-            or x.shape[3] != self.image_encoder.img_size
-        ):
-            x = F.interpolate(
-                x,
-                (self.image_encoder.img_size, self.image_encoder.img_size),
-                mode="bilinear",
-            )
-        return (x - self.pixel_mean) / self.pixel_std
-
-
-def build_road_SWATNet(encoder_patch_embed_dim, encoder_num_heads, img_size = 1024, encoder_depth = 12, decoder_depth = 12, checkpoint=None, is_SWAT: bool = True):
-    encoder_patch_size = 32
-    encoder_mlp_ratio = 4.0
-    encoder_neck_dims = [256, 256]
-    patch_w_num = img_size//encoder_patch_size
-    activation = "gelu"
-    normalization_type = "layer_norm"
-
-    assert activation == "relu" or activation == "gelu"
-    if activation == "relu":
-        activation_fn = nn.ReLU
-    else:
-        activation_fn = nn.GELU
-
-    image_encoder = ImageEncoderViT(
-        img_size=img_size,
-        patch_size=encoder_patch_size,
-        in_chans=3,
-        patch_embed_dim=encoder_patch_embed_dim,
-        normalization_type=normalization_type,
-        depth=encoder_depth,
-        num_heads=encoder_num_heads,
-        mlp_ratio=encoder_mlp_ratio,
-        neck_dims=encoder_neck_dims,
-        act_layer=activation_fn,
-        is_SWAT=is_SWAT
-    )
-    if checkpoint is not None:
-        with open(checkpoint, "rb") as f:
-            state_dict = torch.load(f, map_location="cpu")
-        image_encoder.load_state_dict(state_dict)
-
+        filters = [64, 128, 256, 512]
+        self.is_swat = is_swat
+        img_size, patch_size, in_chans, patch_embed_dim = 512, 4, 3, filters[0]
+        self.encoder1 = nn.Sequential(PatchEmbed(img_size, patch_size, in_chans, patch_embed_dim),
+                                      nn.BatchNorm2d(filters[0]))       
         
-    image_decoder = ImageDecoderViT(
-        patch_embed_dim=encoder_neck_dims[0],
-        depth=decoder_depth,
-        num_heads=4,
-        mlp_ratio=encoder_mlp_ratio,
-        act_layer=activation_fn,
-        patch_w_num = patch_w_num,
-        is_SWAT=is_SWAT
-    )
+        self.encoder2 = BasicBlock(filters[0], filters[1])
+        self.encoder3 = BasicBlock(filters[1], filters[2])
+        self.encoder4 = BasicBlock(filters[2], filters[3])
 
-    swat_net = SWATNet(
-        image_encoder=image_encoder,
-        mask_decoder=image_decoder,
-        pixel_mean=[0.485, 0.456, 0.406],
-        pixel_std=[0.229, 0.224, 0.225],
-    )
+        self.decoder4 = DecoderBlock(filters[3], filters[2])
+        self.decoder3 = DecoderBlock(filters[2], filters[1])
+        self.decoder2 = DecoderBlock(filters[1], filters[0])
+        self.decoder1 = DecoderBlock(filters[0], filters[0])
+
+        self.finaldeconv1 = nn.ConvTranspose2d(filters[0], 32, 4, 2, 1)
+        self.finalrelu1 = nonlinearity
+        self.finalconv2 = nn.Conv2d(32, 16, 3, padding=1)
+        self.finalrelu2 = nonlinearity
+        self.finalconv3 = nn.Conv2d(16, num_classes, 3, padding=1)
+        self.creat_vit_blocks(scale)
+        
+
+    def creat_vit_blocks(self, scale = SCALE_LIST[0]):
+        repeat_block = lambda x, n : [x for _ in range(n)]
+        if scale == SCALE_LIST[0]:
+            self.vit_block_e1 = Block(64, 2, patch_w_num = 128, is_SWAT = self.is_swat)
+            self.vit_block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
+            self.vit_block_e3 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
+
+            self.vit_block_d4 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
+            self.vit_block_d3 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
+            self.vit_block_d2 = Block(64, 2, patch_w_num = 128, is_SWAT = self.is_swat)
+        elif scale =='v2':
+            self.vit_block_e1 = Block(64, 2, patch_w_num = 128, stride=[0, 4, 8, 12], is_SWAT = self.is_swat)
+            self.vit_block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
+            self.vit_block_e3 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
+
+            self.vit_block_d4 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
+            self.vit_block_d3 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
+            self.vit_block_d2 = Block(64, 2, patch_w_num = 128, stride=[0, 4, 8, 12], is_SWAT = self.is_swat)
+        elif scale == 'v3':
+            self.vit_block_e1 = Block(64, 2, patch_w_num = 128, win_size=16, stride=[0, 8], is_SWAT = self.is_swat)
+            self.vit_block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
+            self.vit_block_e3 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
+
+            self.vit_block_d4 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
+            self.vit_block_d3 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
+            self.vit_block_d2 = Block(64, 2, patch_w_num = 128, win_size=16, stride=[0, 8], is_SWAT = self.is_swat)
+        elif scale == 'vit':
+            block_e1 = Block(64, 2, patch_w_num = 128, is_SWAT = True)
+            block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = True)
+            block_e3 = Block(256, 8, patch_w_num = 32, is_SWAT = False)
+
+            block_d4 = Block(256, 8, patch_w_num = 32, is_SWAT = False)
+            block_d3 = Block(128, 4, patch_w_num = 64, is_SWAT = True)
+            block_d2 = Block(64, 2, patch_w_num = 128, is_SWAT = True)
+            
+            self.vit_block_e1 = nn.Sequential(*repeat_block(block_e1,1))
+            self.vit_block_e2 = nn.Sequential(*repeat_block(block_e2,4))
+            self.vit_block_e3 = nn.Sequential(*repeat_block(block_e3,6))
+            self.vit_block_d4 = nn.Sequential(*repeat_block(block_d4,6))
+            self.vit_block_d3 = nn.Sequential(*repeat_block(block_d3,4))
+            self.vit_block_d2 = nn.Sequential(*repeat_block(block_d2,1))
+        elif scale == 'v4':
+            block_e1 = [Block(64, 2, patch_w_num = 128, is_SWAT = True) for i in range(1)]
+            block_e2 = [Block(128, 4, patch_w_num = 64, is_SWAT = True) for i in range(2)]
+            block_e3 = [Block(256, 8, patch_w_num = 32, is_SWAT = True) for i in range(3)]
+
+            block_d4 = [Block(256, 8, patch_w_num = 32, is_SWAT = True) for i in range(3)]
+            block_d3 = [Block(128, 4, patch_w_num = 64, is_SWAT = True) for i in range(2)]
+            block_d2 = [Block(64, 2, patch_w_num = 128, is_SWAT = True) for i in range(1)]
+            
+            self.vit_block_e1 = nn.ModuleList(block_e1)
+            self.vit_block_e2 = nn.ModuleList(block_e2)
+            self.vit_block_e3 = nn.ModuleList(block_e3)
+            self.vit_block_d4 = nn.ModuleList(block_d4)
+            self.vit_block_d3 = nn.ModuleList(block_d3)
+            self.vit_block_d2 = nn.ModuleList(block_d2)
+        elif scale == 'v5':
+            block_e1 = Block(64, 2, patch_w_num = 128, is_SWAT = True, has_bn=True)
+            block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = True, has_bn=True)
+            block_e3 = Block(256, 8, patch_w_num = 32, is_SWAT = True, has_bn=True)
+
+            block_d4 = Block(256, 8, patch_w_num = 32, is_SWAT = True, has_bn=True)
+            block_d3 = Block(128, 4, patch_w_num = 64, is_SWAT = True, has_bn=True)
+            block_d2 = Block(64, 2, patch_w_num = 128, is_SWAT = True, has_bn=True)
+            
+            self.vit_block_e1 = nn.Sequential(*repeat_block(block_e1,1))
+            self.vit_block_e2 = nn.ModuleList(repeat_block(block_e2,4))
+            self.vit_block_e3 = nn.ModuleList(repeat_block(block_e3,4))
+            self.vit_block_d4 = nn.ModuleList(repeat_block(block_d4,4))
+            self.vit_block_d3 = nn.ModuleList(repeat_block(block_d3,4))
+            self.vit_block_d2 = nn.Sequential(*repeat_block(block_d2,1))
+        elif scale == 'no_attention':
+            self.vit_block_e1 = nn.Identity()
+            self.vit_block_e2 = nn.Identity()
+            self.vit_block_e3 = nn.Identity()
+            self.vit_block_d4 = nn.Identity()
+            self.vit_block_d3 = nn.Identity()
+            self.vit_block_d2 = nn.Identity()
+            
     
-    return swat_net
+    def vit_ops(self, x, vit_block):
+        
+        x = rearrange(x, 'B C H W -> B H W C')
+        if isinstance(vit_block, nn.ModuleList):
+            for index, block in enumerate(vit_block):
+                x = block(x)
+        else:
+            x = vit_block(x)
+        x = rearrange(x, 'B H W C -> B C H W')
+        return x
+
+    def forward(self, x):
+
+        e1 = self.encoder1(x)  # H/4， W/4
+        e1 = self.vit_ops(e1, self.vit_block_e1) # H/4， W/4
+
+        e2 = self.encoder2(e1) 
+        e2 = self.vit_ops(e2, self.vit_block_e2) # H/8， W/8
+
+        e3 = self.encoder3(e2)
+        e3 = self.vit_ops(e3, self.vit_block_e3) # H/16， W/16
+
+        e4 = self.encoder4(e3)  # H/32， W/32
+
+        # Center
+
+        # Decoder
+        d4 = self.decoder4(e4) + e3
+        d4 = self.vit_ops(d4, self.vit_block_d4) 
+
+        d3 = self.decoder3(d4) + e2
+        d3 = self.vit_ops(d3, self.vit_block_d3)
+
+        d2 = self.decoder2(d3) + e1
+        d2 = self.vit_ops(d2, self.vit_block_d2)
+
+        d1 = self.decoder1(d2)
+
+        out = self.finaldeconv1(d1)
+        out = self.finalrelu1(out)
+        out = self.finalconv2(out)
+        out = self.finalrelu2(out)
+        out = self.finalconv3(out)
+
+        return F.sigmoid(out)

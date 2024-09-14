@@ -18,24 +18,27 @@ def loss_draw():
     losses1 = read_data('logs/DLinkNet_roadtrace__v1.log')
     losses2 = read_data('logs/NLLinkNet_roadtrace__v1.log')
     losses3 = read_data('logs/SegNet_roadtrace__v1.log')
-    losses4 = read_data('logs/SWATNetV6_roadtrace_v1.log')
+    losses4 = read_data('logs/SWATNetV6_roadtrace_ablation_v4.log')
     losses5 = read_data('logs/UNet_roadtrace__v1.log')
     losses6 = read_data('logs/UNet3Plus_roadtrace__v1.log')
+    losses7 = read_data('logs/SETR_roadtrace__v1.log')
     
     
     # 绘制损失曲线图
-    plt.plot(range(len(losses1)), losses1, '--', lw=1, label="DLinkNet")
-    plt.plot(range(len(losses2)), losses2, '-', lw=1, label="NLLinkNet")
-    plt.plot(range(len(losses3)), losses3, ':', lw=1, label="SegNet")
-    plt.plot(range(len(losses4)), losses4, '-.', lw=1, label="SWATNet")
-    plt.plot(range(len(losses5)), losses5, '--', lw=1, label="UNet")
     plt.plot(range(len(losses6)), losses6, '-', lw=1, label="UNet3Plus")
+    plt.plot(range(len(losses5)), losses5, '--', lw=1, label="UNet")
+    plt.plot(range(len(losses3)), losses3, ':', lw=1, label="SegNet")
+    plt.plot(range(len(losses7)), losses7, '-', lw=1, label="SETR")
+    plt.plot(range(len(losses1)), losses1, '--', lw=1, label="DLinkNet")
+    plt.plot(range(len(losses2)), losses2, ':', lw=1, label="NLLinkNet")
+    plt.plot(range(len(losses4)), losses4, '-', lw=1, label="SWATNet")
     
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
+    plt.xlabel("Epoch", fontsize = 14)
+    plt.ylabel("Loss", fontsize = 14)
     # plt.title("Irregular Loss Curve")
     plt.legend()
     plt.savefig('loss.png')
+    plt.savefig('loss.pdf')
 
 def computational_draw():
     img_size = [256,384,512,640,768,896,1024]
@@ -47,15 +50,50 @@ def computational_draw():
     plt.plot(img_size, swat_mb, marker = 'o', lw=1, label="ViT")
     plt.plot(img_size[:len(attention_mb)], attention_mb, marker = '^', lw=1, label="SWAT")
     
-    plt.xlabel("Image Size")
-    plt.ylabel("GPU Memory (GB)")
+    plt.xlabel("Image Size", fontsize = 14)
+    plt.ylabel("GPU Memory (GB)", fontsize = 14)
     # plt.title("GPU Memory Cur")
     plt.legend()
     plt.savefig('computational.pdf')
 
+
+def draw_memory():
+
+# % Unet3+ 44770
+# % Unet 4288
+# % SegNet 24660
+# % SETR  18184
+# % D-LinkNet 8288
+# % NL-LinkNe 8664
+# % SWATNet-S 10310
+# % SWATNet-L 12784
+    categories = ['Unet3+', 'Unet', 'SegNet', 'SETR', 'D-LinkNet', 'NL-LinkNet', 'SWATNet-S', 'SWATNet-L']
+    values1 = [44.770, 4.288, 24.660, 18.184, 8.288, 8.664, 10.310, 14.594]
+    # values2 = [6, 8, 10]
+    categories.reverse()
+    values1.reverse()
+    bar_width = 0.75
+    
+    plt.figure(figsize=(10,4))
+
+    # plt.grid()
+    plt.barh(categories, values1, bar_width)
+
+    
+    for x, y in zip(range(len(categories)), values1):
+        plt.text(y+1, x-0.1, y, fontsize = 10)
+    plt.xlim(0, 50)
+    plt.xlabel('Memory cost (GB)', fontsize = 14)
+    plt.ylabel('Comparison Methods', fontsize = 14)
+    # plt.title('Horizontal Bar Chart')
+    plt.tight_layout()
+    plt.savefig('memory.pdf')
+
+
 if __name__ == '__main__':
-    # computational_draw()
+    computational_draw()
     loss_draw()
+    draw_memory()
     # 1、‘-’：实线样式
     # 2、‘--’：短横线样式
     # 3、‘-.’：点划线样式

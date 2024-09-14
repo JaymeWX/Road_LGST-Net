@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torchvision import models
 
 from networks.common import nonlinearity, DecoderBlock
-from networks.SWATNet import Block, PatchEmbed
+from networks.SWATNet_old import Block, PatchEmbed
 from einops import rearrange
 
 

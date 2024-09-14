@@ -10,12 +10,12 @@ from networks.nllinknet import NL34_LinkNet
 from networks.SETR import SETR
 from networks.Unet3plus import UNet_3Plus
 from networks.SegNet import SegNet
-from networks.SWATNet import build_road_SWATNet
-from networks.SWATNet_v2 import SWATNet as SWATNetV2
-from networks.SWATNet_v3 import SWATNet as SWATNetV3
-from networks.SWATNet_v4 import SWATNet as SWATNetV4
-from networks.SWATNet_v5 import SWATNet as SWATNetV5
-from networks.SWATNet_v6 import SWATNet as SWATNetV6
+# from networks.SWATNet_old import build_road_SWATNet
+# from networks.SWATNet_v2 import SWATNet as SWATNetV2
+# from networks.SWATNet_v3 import SWATNet as SWATNetV3
+# from networks.SWATNet_v4 import SWATNet as SWATNetV4
+# from networks.SWATNet_v5 import SWATNet as SWATNetV5
+from networks.SWATNet import SWATNet as SWATNetV6
 
 
 from framework import ModelContainer
@@ -63,20 +63,8 @@ def train(model_name, dataset_method, img_size, batch_size, log_name, checkpoint
 
     if model_name == 'SETR':
         net = SETR(num_classes=1, image_size=512, patch_size=512//16, dim=1024, depth = 24, heads = 16, mlp_dim = 2048, out_indices = (9, 14, 19, 23))
-    elif model_name == 'SWATNet':
-        net = build_road_SWATNet(192, 6, img_size=img_size, encoder_depth = 6, decoder_depth = 6)
-    elif model_name == 'SWATNetV2':
-        net = SWATNetV2(192, 6, img_size=img_size, encoder_depth = 6, decoder_depth = 6)
-    elif model_name == 'SWATNetV3':
-        net = SWATNetV3()
-    elif model_name == 'SWATNetV4':
-        net = SWATNetV4()
-    elif model_name == 'SWATNetV5':
-        net = SWATNetV5()
     elif model_name == 'SWATNetV6':
-        net = SWATNetV6()
-    elif model_name == 'NoSWATNet':
-        net = build_road_SWATNet(192, 6, img_size=img_size, encoder_depth = 12, decoder_depth = 12, is_SWAT = False)
+        net = SWATNetV6(scale='v4')
     elif model_name == 'DLinkNet':
         net = DinkNet34()
     elif model_name == 'NLLinkNet':
@@ -95,6 +83,7 @@ def train(model_name, dataset_method, img_size, batch_size, log_name, checkpoint
     if checkpoint is not '':
         solver.load(checkpoint)
     dataset = dataset_method(img_size)
+    train_img_count = len(dataset)
     data_loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
@@ -117,7 +106,7 @@ def train(model_name, dataset_method, img_size, batch_size, log_name, checkpoint
             lr = solver.optimizer.param_groups[0]["lr"]
             print(f'epoch:[{epoch}/{total_epoch}] batch:[{index}/{batch_num}] loss:{train_loss:.6f} lr:{lr:.8f}  {NAME}')
         train_epoch_loss /= batch_num
-        print(f'epoch:[{epoch}/{total_epoch}] loss:{train_epoch_loss:.6f} lr:{lr:.8f} time:{int(time() - tic)/60:.2f}min', file = mylog)
+        print(f'epoch:[{epoch}/{total_epoch}] loss:{train_epoch_loss:.6f} lr:{lr:.8f} time:{int(time() - tic)/60:.4f}min fps:{train_img_count/int(time() - tic):.2f}', file = mylog)
 
         
         if train_epoch_loss >= train_epoch_best_loss:
@@ -139,10 +128,10 @@ if __name__ == '__main__':
     os.environ['CUDA_VISIBLE_DEVICES'] = '1'
     batchsize = 16
     img_size = 512   
-    checkpoint = 'weights/SWATNetV6_deepglobe_debug_v2.pt'
+    checkpoint = 'weights/SWATNetV6_roadtrace_ablation_v5.pt'
     lr, lr_end = 1e-4, 1e-7
     total_epoch = 600
     
     # SWATNet NoSWATNet SETR DLinkNet NLLinkNet SWATNetV3 UNet
-    train('SETR', get_roadtrace_trainset, img_size = img_size, 
-          log_name='_v1', batch_size=batchsize, checkpoint='', lr=lr, lr_end=lr_end, total_epoch=total_epoch)
+    train('SWATNetV6', get_roadtrace_trainset, img_size = img_size, 
+          log_name='debug_fps', batch_size=batchsize, checkpoint='', lr=lr, lr_end=lr_end, total_epoch=total_epoch)

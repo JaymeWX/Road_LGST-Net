@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torchvision import models
 
 from networks.common import nonlinearity, DecoderBlock
-from networks.SWATNet import ShiftWindAttention, Block
+from networks.SWATNet_old import ShiftWindAttention, Block
 from einops import rearrange
 
 class Dblock_more_dilate(nn.Module):

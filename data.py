@@ -1,6 +1,3 @@
-"""
-Based on https://github.com/asanakoy/kaggle_carvana_segmentation
-"""
 import torch
 import torch.utils.data as data
 

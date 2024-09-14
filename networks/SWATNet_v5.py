@@ -5,7 +5,7 @@ from torchvision import models
 
 from functools import partial
 from networks.common import DecoderBlock
-from networks.SWATNet import ShiftWindAttention, PatchEmbed, Attention, Mlp
+from networks.SWATNet_old import ShiftWindAttention, PatchEmbed, Attention, Mlp
 from einops import rearrange
 
 

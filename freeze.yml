@@ -302,4 +302,3 @@ dependencies:
       - yacs==0.1.8
       - yapf==0.40.2
       - yarl==1.9.4
-prefix: /home/wangxu/.conda/envs/py37torch

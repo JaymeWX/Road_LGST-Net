@@ -12,7 +12,7 @@ from networks.SegNet import SegNet
 from networks.SWATNet_v3 import SWATNet as SWATNetV3
 from networks.SWATNet_v4 import SWATNet as SWATNetV4
 from networks.SWATNet_v5 import SWATNet as SWATNetV5
-from networks.SWATNet_v6 import SWATNet as SWATNetV6
+from networks.SWATNet import SWATNet as SWATNetV6
 from data import DeepGlobeDataset, RoadDataset
 from torch.utils.data import DataLoader
 import csv
@@ -127,7 +127,7 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
     elif model_name == 'SWATNetV5':
         net = SWATNetV5()
     elif model_name == 'SWATNetV6':
-        net = SWATNetV6()
+        net = SWATNetV6(scale = 'v4')
     elif model_name == 'DLinkNet':
         net = DinkNet34()
     elif model_name == 'NLLinkNet':
@@ -208,7 +208,7 @@ def param_gflops_eval(model_name, img_size = 512):
     elif model_name == 'SWATNetV3':
         net = SWATNetV3()
     elif model_name == 'SWATNetV6':
-        net = SWATNetV6()
+        net = SWATNetV6(scale='v4')
     elif model_name == 'DLinkNet':
         net = DinkNet34()
     elif model_name == 'NLLinkNet':
@@ -232,6 +232,6 @@ def param_gflops_eval(model_name, img_size = 512):
     print(params)
 
 if __name__ == '__main__':
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    metrics_eval('SegNet', get_roadtrace_testset, 'SegNet_roadtrace__v1.pt')
-    # param_gflops_eval('SWATNetV6')
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+    # metrics_eval('SWATNetV6', get_roadtrace_testset, 'SWATNetV6_roadtrace_ablation_v4.pt')
+    param_gflops_eval('SWATNetV6')
