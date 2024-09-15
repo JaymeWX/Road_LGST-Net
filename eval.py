@@ -9,16 +9,13 @@ from networks.unet import Unet
 from networks.SETR import SETR
 from networks.Unet3plus import UNet_3Plus
 from networks.SegNet import SegNet
-from networks.SWATNet_v3 import SWATNet as SWATNetV3
-from networks.SWATNet_v4 import SWATNet as SWATNetV4
-from networks.SWATNet_v5 import SWATNet as SWATNetV5
-from networks.SWATNet import SWATNet as SWATNetV6
+from networks.SWATNet import SWATNet
 from data import DeepGlobeDataset, RoadDataset
 from torch.utils.data import DataLoader
 import csv
 from PIL import Image
 import os
-from networks.sam import build_road_sam, Attention
+from networks.sam import build_road_sam
 from fvcore.nn import FlopCountAnalysis, parameter_count_table
 
 warnings.filterwarnings("ignore")
@@ -50,10 +47,7 @@ class IOUMetric:
         fwavacc = (freq[freq > 0] * iou[freq > 0]).sum()
         return acc, acc_cls, iou, miou, fwavacc
 
-
-
 class AccuracyIndex():
-    
     def __init__(self, label:np.array, pred:np.array) -> None:
         self.Iand = np.sum(label*pred) 
         self.Ior = np.sum(label) + np.sum(pred) - self.Iand
@@ -73,10 +67,6 @@ class AccuracyIndex():
     def get_recall(self):
         rec = (self.Iand + self.smooth_factor)/(self.label_count + self.smooth_factor)
         return rec
-
-    def get_IOU(self):
-        iou = (self.Iand + self.smooth_factor) / (self.Ior + self.smooth_factor)
-        return iou
     
 def get_deepglobe_testset(img_size):
     ROOT = 'dataset/deepglobe/train/'
@@ -97,37 +87,11 @@ def get_roadtrace_testset(img_size):
     dataset = RoadDataset(vallist, ROOT, is_train=False, img_size = img_size)
     return dataset
 
-def get_massroad_testset(img_size):
-    ROOT = 'dataset/Massachusetts_roads/tiff_750x750/all/'
-    val_data_txt = 'dataset/Massachusetts_roads/tiff_750x750/test.txt'
-    with open(val_data_txt, 'r') as f:
-        vallist = [name.replace('\n', '') for name in f.readlines()]
-    
-    dataset = RoadDataset(vallist, ROOT, is_train=False, img_size = img_size)
-    return dataset
-
-def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_output_mask = True):
-    labels = []
-    predicts = []
-    model_name = model_name
-    dataset_name = str(dataset_method.__name__).split('_')[1]
-    save_path = f'results/{model_name}_{dataset_name}/'
-    if os.path.exists(save_path) is False:
-        os.mkdir(save_path)
-    img_size = 512
-    
+def net_init(model_name, img_size = 512):
     if model_name == 'SETR':
-        net = SETR(num_classes=1, image_size=512, patch_size=512//16, dim=1024, depth = 24, heads = 16, mlp_dim = 2048, out_indices = (9, 14, 19, 23))
+        net = SETR(num_classes=1, image_size=img_size, patch_size=img_size//16, dim=1024, depth = 24, heads = 16, mlp_dim = 2048, out_indices = (9, 14, 19, 23))
     elif model_name == 'SWATNet':
-        net = build_road_sam(192, 6, img_size=img_size, encoder_depth = 12, decoder_depth = 12)
-    elif model_name == 'SWATNetV3':
-        net = SWATNetV3()
-    elif model_name == 'SWATNetV4':
-        net = SWATNetV4()
-    elif model_name == 'SWATNetV5':
-        net = SWATNetV5()
-    elif model_name == 'SWATNetV6':
-        net = SWATNetV6(scale = 'v4')
+        net = SWATNet(scale = 'normal')
     elif model_name == 'DLinkNet':
         net = DinkNet34()
     elif model_name == 'NLLinkNet':
@@ -140,7 +104,19 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
         net = SegNet()
     else:
         print('invaild model name!!')
-        return
+        return None
+    return net
+def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_output_mask = True):
+    labels = []
+    predicts = []
+    model_name = model_name
+    dataset_name = str(dataset_method.__name__).split('_')[1]
+    save_path = f'results/{model_name}_{dataset_name}/'
+    if os.path.exists(save_path) is False:
+        os.mkdir(save_path)
+    img_size = 512
+    
+    net = net_init(model_name, img_size)
     
     # 加载模型
     solver = ModelContainer(net, dice_bce_loss, 2e-4)
@@ -174,22 +150,20 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
                 pil_image.save(save_path+f'{image_names[ids]}.png', 'PNG')
         print(f'progress: {index}/{batch_num}')
 
+
+    # 评估
     precisions = []
     recalls = []
     accuracies = []
-    ious = []
     for pre_mask, label in zip(predicts, labels):
         accuracy = AccuracyIndex(label, pre_mask)
         precisions.append(accuracy.get_precision())
         recalls.append(accuracy.get_recall())
         accuracies.append(accuracy.get_accuracy())
-        ious.append(accuracy.get_IOU())
-    prec, recall, acc, iou = list(map(lambda x: sum(x)/len(x), [precisions, recalls, accuracies, ious]))
+    prec, recall, acc = list(map(lambda x: sum(x)/len(x), [precisions, recalls, accuracies]))
     F1_ = 2*recall*prec/(recall+prec)
-    # print(f'F1:{F1_}')
-    print(f'recall:{recall} precision:{prec} F1:{F1_} accuracy:{acc} iou:{iou}')
+    print(f'recall:{recall} precision:{prec} F1:{F1_} accuracy:{acc}')
     
-    # 评估
     el = IOUMetric()
     acc, acc_cls, iou, miou, fwavacc = el.evaluate(predicts, labels)
     
@@ -201,27 +175,7 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
 
 
 def param_gflops_eval(model_name, img_size = 512):
-    if model_name == 'SETR':
-        net = SETR(num_classes=1, image_size=512, patch_size=512//16, dim=1024, depth = 24, heads = 16, mlp_dim = 2048, out_indices = (9, 14, 19, 23))
-    elif model_name == 'SWATNet':
-        net = build_road_sam(192, 6, img_size=img_size, encoder_depth = 12, decoder_depth = 12)
-    elif model_name == 'SWATNetV3':
-        net = SWATNetV3()
-    elif model_name == 'SWATNetV6':
-        net = SWATNetV6(scale='v4')
-    elif model_name == 'DLinkNet':
-        net = DinkNet34()
-    elif model_name == 'NLLinkNet':
-        net = NL34_LinkNet()
-    elif model_name == 'UNet':
-        net = Unet()
-    elif model_name == 'UNet3Plus':
-        net = UNet_3Plus()
-    elif model_name == 'SegNet':
-        net = SegNet()
-    else:
-        print('invaild model name!!')
-        return
+    net = net_init(model_name, img_size)
     net = net.cuda()
     input = torch.randn(1, 3, img_size, img_size).cuda()  
 
@@ -233,5 +187,5 @@ def param_gflops_eval(model_name, img_size = 512):
 
 if __name__ == '__main__':
     os.environ['CUDA_VISIBLE_DEVICES'] = '1'
-    # metrics_eval('SWATNetV6', get_roadtrace_testset, 'SWATNetV6_roadtrace_ablation_v4.pt')
-    param_gflops_eval('SWATNetV6')
+    metrics_eval('SWATNet', get_roadtrace_testset, '')
+    param_gflops_eval('SWATNet')
