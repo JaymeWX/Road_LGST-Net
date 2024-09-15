@@ -338,7 +338,7 @@ class BasicBlock(nn.Module):
         
         return x
 
-SCALE_LIST = ['light', 'middle', 'large']
+SCALE_LIST = ['light', 'normal']
 class SWATNet(nn.Module):
     def __init__(self, num_classes=1, is_swat = True, scale = SCALE_LIST[0]):
         super(SWATNet, self).__init__()
@@ -346,24 +346,25 @@ class SWATNet(nn.Module):
         filters = [64, 128, 256, 512]
         self.is_swat = is_swat
         img_size, patch_size, in_chans, patch_embed_dim = 512, 4, 3, filters[0]
-        self.encoder1 = nn.Sequential(PatchEmbed(img_size, patch_size, in_chans, patch_embed_dim),
+        self.patch_layer = nn.Sequential(PatchEmbed(img_size, patch_size, in_chans, patch_embed_dim),
                                       nn.BatchNorm2d(filters[0]))       
         
-        self.encoder2 = BasicBlock(filters[0], filters[1])
-        self.encoder3 = BasicBlock(filters[1], filters[2])
-        self.encoder4 = BasicBlock(filters[2], filters[3])
+        self.creat_vit_blocks(scale)
 
-        self.decoder4 = DecoderBlock(filters[3], filters[2])
-        self.decoder3 = DecoderBlock(filters[2], filters[1])
-        self.decoder2 = DecoderBlock(filters[1], filters[0])
-        self.decoder1 = DecoderBlock(filters[0], filters[0])
+        self.downsample1 = BasicBlock(filters[0], filters[1])
+        self.downsample2 = BasicBlock(filters[1], filters[2])
+        self.downsample3 = BasicBlock(filters[2], filters[3])
 
+        self.upsample3 = DecoderBlock(filters[3], filters[2])
+        self.upsample2 = DecoderBlock(filters[2], filters[1])
+        self.upsample1 = DecoderBlock(filters[1], filters[0])
+
+        self.finalupsample = DecoderBlock(filters[0], filters[0])
         self.finaldeconv1 = nn.ConvTranspose2d(filters[0], 32, 4, 2, 1)
         self.finalrelu1 = nonlinearity
         self.finalconv2 = nn.Conv2d(32, 16, 3, padding=1)
         self.finalrelu2 = nonlinearity
         self.finalconv3 = nn.Conv2d(16, num_classes, 3, padding=1)
-        self.creat_vit_blocks(scale)
         
 
     def creat_vit_blocks(self, scale = SCALE_LIST[0]):
@@ -373,77 +374,24 @@ class SWATNet(nn.Module):
             self.vit_block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
             self.vit_block_e3 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
 
-            self.vit_block_d4 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
-            self.vit_block_d3 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
-            self.vit_block_d2 = Block(64, 2, patch_w_num = 128, is_SWAT = self.is_swat)
-        elif scale =='v2':
-            self.vit_block_e1 = Block(64, 2, patch_w_num = 128, stride=[0, 4, 8, 12], is_SWAT = self.is_swat)
-            self.vit_block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
-            self.vit_block_e3 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
-
-            self.vit_block_d4 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
-            self.vit_block_d3 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
-            self.vit_block_d2 = Block(64, 2, patch_w_num = 128, stride=[0, 4, 8, 12], is_SWAT = self.is_swat)
-        elif scale == 'v3':
-            self.vit_block_e1 = Block(64, 2, patch_w_num = 128, win_size=16, stride=[0, 8], is_SWAT = self.is_swat)
-            self.vit_block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
-            self.vit_block_e3 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
-
-            self.vit_block_d4 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
-            self.vit_block_d3 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
-            self.vit_block_d2 = Block(64, 2, patch_w_num = 128, win_size=16, stride=[0, 8], is_SWAT = self.is_swat)
-        elif scale == 'vit':
-            block_e1 = Block(64, 2, patch_w_num = 128, is_SWAT = True)
-            block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = True)
-            block_e3 = Block(256, 8, patch_w_num = 32, is_SWAT = False)
-
-            block_d4 = Block(256, 8, patch_w_num = 32, is_SWAT = False)
-            block_d3 = Block(128, 4, patch_w_num = 64, is_SWAT = True)
-            block_d2 = Block(64, 2, patch_w_num = 128, is_SWAT = True)
-            
-            self.vit_block_e1 = nn.Sequential(*repeat_block(block_e1,1))
-            self.vit_block_e2 = nn.Sequential(*repeat_block(block_e2,4))
-            self.vit_block_e3 = nn.Sequential(*repeat_block(block_e3,6))
-            self.vit_block_d4 = nn.Sequential(*repeat_block(block_d4,6))
-            self.vit_block_d3 = nn.Sequential(*repeat_block(block_d3,4))
-            self.vit_block_d2 = nn.Sequential(*repeat_block(block_d2,1))
-        elif scale == 'v4':
+            self.vit_block_d3 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
+            self.vit_block_d2 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
+            self.vit_block_d1 = Block(64, 2, patch_w_num = 128, is_SWAT = self.is_swat)
+        elif scale == 'v4' or scale == SCALE_LIST[1]:
             block_e1 = [Block(64, 2, patch_w_num = 128, is_SWAT = True) for i in range(1)]
             block_e2 = [Block(128, 4, patch_w_num = 64, is_SWAT = True) for i in range(2)]
             block_e3 = [Block(256, 8, patch_w_num = 32, is_SWAT = True) for i in range(3)]
 
-            block_d4 = [Block(256, 8, patch_w_num = 32, is_SWAT = True) for i in range(3)]
-            block_d3 = [Block(128, 4, patch_w_num = 64, is_SWAT = True) for i in range(2)]
-            block_d2 = [Block(64, 2, patch_w_num = 128, is_SWAT = True) for i in range(1)]
+            block_d3 = [Block(256, 8, patch_w_num = 32, is_SWAT = True) for i in range(3)]
+            block_d2 = [Block(128, 4, patch_w_num = 64, is_SWAT = True) for i in range(2)]
+            block_d1 = [Block(64, 2, patch_w_num = 128, is_SWAT = True) for i in range(1)]
             
             self.vit_block_e1 = nn.ModuleList(block_e1)
             self.vit_block_e2 = nn.ModuleList(block_e2)
             self.vit_block_e3 = nn.ModuleList(block_e3)
-            self.vit_block_d4 = nn.ModuleList(block_d4)
             self.vit_block_d3 = nn.ModuleList(block_d3)
             self.vit_block_d2 = nn.ModuleList(block_d2)
-        elif scale == 'v5':
-            block_e1 = Block(64, 2, patch_w_num = 128, is_SWAT = True, has_bn=True)
-            block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = True, has_bn=True)
-            block_e3 = Block(256, 8, patch_w_num = 32, is_SWAT = True, has_bn=True)
-
-            block_d4 = Block(256, 8, patch_w_num = 32, is_SWAT = True, has_bn=True)
-            block_d3 = Block(128, 4, patch_w_num = 64, is_SWAT = True, has_bn=True)
-            block_d2 = Block(64, 2, patch_w_num = 128, is_SWAT = True, has_bn=True)
-            
-            self.vit_block_e1 = nn.Sequential(*repeat_block(block_e1,1))
-            self.vit_block_e2 = nn.ModuleList(repeat_block(block_e2,4))
-            self.vit_block_e3 = nn.ModuleList(repeat_block(block_e3,4))
-            self.vit_block_d4 = nn.ModuleList(repeat_block(block_d4,4))
-            self.vit_block_d3 = nn.ModuleList(repeat_block(block_d3,4))
-            self.vit_block_d2 = nn.Sequential(*repeat_block(block_d2,1))
-        elif scale == 'no_attention':
-            self.vit_block_e1 = nn.Identity()
-            self.vit_block_e2 = nn.Identity()
-            self.vit_block_e3 = nn.Identity()
-            self.vit_block_d4 = nn.Identity()
-            self.vit_block_d3 = nn.Identity()
-            self.vit_block_d2 = nn.Identity()
+            self.vit_block_d1 = nn.ModuleList(block_d1)
             
     
     def vit_ops(self, x, vit_block):
@@ -458,32 +406,28 @@ class SWATNet(nn.Module):
         return x
 
     def forward(self, x):
+        
+        # input to patch embedding
+        e1 = self.patch_layer(x)  # H/4， W/4
 
-        e1 = self.encoder1(x)  # H/4， W/4
+        # Encoder
         e1 = self.vit_ops(e1, self.vit_block_e1) # H/4， W/4
-
-        e2 = self.encoder2(e1) 
+        e2 = self.downsample1(e1) 
         e2 = self.vit_ops(e2, self.vit_block_e2) # H/8， W/8
-
-        e3 = self.encoder3(e2)
+        e3 = self.downsample2(e2)
         e3 = self.vit_ops(e3, self.vit_block_e3) # H/16， W/16
-
-        e4 = self.encoder4(e3)  # H/32， W/32
-
-        # Center
+        e4 = self.downsample3(e3)  # H/32， W/32
 
         # Decoder
-        d4 = self.decoder4(e4) + e3
-        d4 = self.vit_ops(d4, self.vit_block_d4) 
+        d4 = self.upsample3(e4) + e3
+        d4 = self.vit_ops(d4, self.vit_block_d3) 
+        d3 = self.upsample2(d4) + e2
+        d3 = self.vit_ops(d3, self.vit_block_d2)
+        d2 = self.upsample1(d3) + e1
+        d2 = self.vit_ops(d2, self.vit_block_d1)
 
-        d3 = self.decoder3(d4) + e2
-        d3 = self.vit_ops(d3, self.vit_block_d3)
-
-        d2 = self.decoder2(d3) + e1
-        d2 = self.vit_ops(d2, self.vit_block_d2)
-
-        d1 = self.decoder1(d2)
-
+        # output head
+        d1 = self.finalupsample(d2)
         out = self.finaldeconv1(d1)
         out = self.finalrelu1(out)
         out = self.finalconv2(out)
