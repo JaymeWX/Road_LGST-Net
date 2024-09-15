@@ -134,4 +134,4 @@ if __name__ == '__main__':
     
     # SWATNet NoSWATNet SETR DLinkNet NLLinkNet SWATNetV3 UNet
     train('SWATNetV6', get_roadtrace_trainset, img_size = img_size, 
-          log_name='debug_fps', batch_size=batchsize, checkpoint='', lr=lr, lr_end=lr_end, total_epoch=total_epoch)
+          log_name='ablation_v4_0915', batch_size=batchsize, checkpoint='', lr=lr, lr_end=lr_end, total_epoch=total_epoch)
