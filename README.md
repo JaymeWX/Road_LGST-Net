@@ -5,9 +5,9 @@ The content is keep updating.
 ## Start
 Firstly, you should prepare the dataset for training or testing. 
 Follow the next steps for training or testing.
-1. Prepare the datasets as instructed in the [Dateset Preparing](#Dateset Preparing).
+1. Prepare the datasets as instructed in the [Dateset Preparing](#datesetsection).
 
-## Dateset Preparing <a name="Dateset Preparing"></a>
+## Dateset Preparing <a id="datesetsection"></a>
 You can download our preproccessed dataset from the follow link:
 https://pan.baidu.com/s/1HYdqUCERI3JuBQkrI3eEzA?pwd=92rv
 
