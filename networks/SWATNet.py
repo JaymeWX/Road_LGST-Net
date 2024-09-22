@@ -76,158 +76,12 @@ class Attention(nn.Module):
         x = self.dropout(x)
         return x
 
-
+# Because the paper has not been accepted, Our team felt there was some risk in giving away the complete code.
+# Therefore, this core module of our project has been hidden temporarily.
+# If the paper is accepted, we will release the code at the first time.
 class ShiftWindAttention(nn.Module):
     def __init__(self, dim, heads, dim_head = 64, dropout = 0., win_size = 8, stride = [0, 4], patch_w_num = 32, qkv_bias = False):
-        super().__init__()
-        self.win_size = win_size
-        self.stride = stride
-        self.patch_w_num = patch_w_num
-        dim_head = dim // heads
-        inner_dim = dim_head *  heads
-        
-        project_out = not (heads == 1 and dim_head == dim)
- 
-        self.heads = heads
-        self.scale = dim_head ** -0.5
- 
-        self.softmax = nn.Softmax(dim = -1)
-        self.dropout = nn.Dropout(dropout)
- 
-        self.to_qkv = nn.Linear(dim, inner_dim * 3,  bias=qkv_bias)
-        # self.qkv_pro = nn.Sequential(nn.GELU(), nn.Linear(inner_dim * 3, inner_dim * 3))
- 
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim),
-            nn.Dropout(dropout)
-        ) if project_out else nn.Identity()
-        masks = []
-        for step in stride:
-            masks.append(self.get_mask(win_size, step))
-        masks = torch.stack(masks)
-        self.register_buffer("attn_masks", masks)
-        self.init_position_param(win_size)
- 
-    def forward(self, x):
-        q, k, v = self.to_qkv(x).chunk(3, dim = -1)
-        # qkv = self.qkv_pro(qkv).chunk(3, dim = -1)
-        # d = c * h
-        # q, k, v = map(lambda t: rearrange(t, 'b (ph pw) d -> b ph pw d', pw = self.patch_w_num), qkv)
-        out_list = []
-        for index, shift_step in enumerate(self.stride):
-            out = self.cal_window(q, k, v, self.win_size, shift_step, self.attn_masks[index])
-            out_list.append(out)
-
-        out = torch.stack(out_list, dim = -1).mean(dim = -1)
-        # out = torch.cat(out_list, dim = -1)
-        return self.to_out(out)
-
-
-    def cal_window(self, q, k, v, win_size, stride, mask):
-        BS, H, W, _ = q.shape #BS is batch size
-        win_num = (H//win_size)**2
-        qs = self.window_partition(q, win_size, stride)
-        ks = self.window_partition(k, win_size, stride)
-        vs = self.window_partition(v, win_size, stride)
-        nWb = qs.shape[0]
-        qs, ks, vs = map(lambda t: rearrange(t, 'nWb wh ww (h c) -> nWb h (wh ww) c', h = self.heads), [qs, ks, vs])
-        
-        dots = torch.matmul(qs, ks.transpose(-1, -2)) * self.scale
-
-        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
-            win_size * win_size, win_size * win_size, -1)  # Wh*Ww,Wh*Ww,nH
-        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
-        dots = dots + repeat(relative_position_bias, 'h c1 c2 -> nWb h c1 c2', nWb = nWb)
-
-        dots = dots + repeat(mask, 'wn c1 c2 -> (bs wn) h c1 c2', bs = BS, h = self.heads)
-        
-        attn = self.softmax(dots)
-        attn = self.dropout(attn)
-        out = torch.matmul(attn, vs)
-        out = self.window_reverse(out, win_size, H, W, stride)
-        # out = rearrange(out, 'b h H W c -> b (H W) (h c)')
-        return out
-
-    def get_mask(self, window_size, shift_size):
-        H, W = pair(self.patch_w_num)
-        if shift_size > 0:
-            # calculate attention mask for SWA
-            img_mask = torch.zeros((1, H, W, 1))  # 1 H W 1
-            h_slices = (slice(0, -window_size),
-                        slice(-window_size, -shift_size),
-                        slice(-shift_size, None))
-            w_slices = (slice(0, -window_size),
-                        slice(-window_size, -shift_size),
-                        slice(-shift_size, None))
-            cnt = 0
-            for h in h_slices:
-                for w in w_slices:
-                    img_mask[:, h, w, :] = cnt
-                    cnt += 1
-
-            mask_windows = self.window_partition(img_mask, window_size)  # nW, window_size, window_size, 1
-            mask_windows = mask_windows.view(-1, window_size * window_size)
-            attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-            attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
-        else:
-            attn_mask = torch.zeros(((H//window_size)**2, window_size * window_size, window_size * window_size))
-
-        return attn_mask
-    
-    def window_partition(self, x, window_size, shift = 0):
-        """
-        Args:
-            x: (B, H, W, C)
-            window_size (int): window size
-
-        Returns:
-            windows: (num_windows*B, window_size, window_size, C)
-        """
-        if shift > 0:
-            x = torch.roll(x, shifts=(-shift, -shift), dims=(1, 2)) 
-
-        B, H, W, C = x.shape
-        x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
-        windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
-        return windows
-
-    def window_reverse(self, windows, window_size, H, W, shift = 0):
-        """
-        Args:
-            windows: (num_windows*B, h, window_size*window_size, C)
-            window_size (int): Window size
-            H (int): Height of image
-            W (int): Width of image
-
-        Returns:
-            x: (B, H, W, C)
-        """
-        B = int(windows.shape[0] / (H * W / window_size / window_size))
-        x = rearrange(windows, '(b nWh nWw) h (wh ww) c -> b (nWh wh) (nWw ww) (h c)', b = B, nWh = H // window_size, wh = window_size)
-
-        if shift > 0:
-            x = torch.roll(x, shifts=(shift, shift), dims=(2, 3))
-        return x
-    
-    def init_position_param(self, win_size):
-        
-        # define a parameter table of relative position bias
-        self.relative_position_bias_table = nn.Parameter(
-            torch.zeros((2 * win_size - 1) * (2 * win_size - 1), self.heads))  # 2*Wh-1 * 2*Ww-1, nH
-
-        # get pair-wise relative position index for each token inside the window
-        coords_h = torch.arange(win_size)
-        coords_w = torch.arange(win_size)
-        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
-        coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
-        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
-        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
-        relative_coords[:, :, 0] += win_size - 1  # shift to start from 0
-        relative_coords[:, :, 1] += win_size - 1
-        relative_coords[:, :, 0] *= 2 * win_size - 1
-        relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
-        self.register_buffer("relative_position_index", relative_position_index)
-
+        pass
 
 class Mlp(nn.Module):
     def __init__(
@@ -368,7 +222,6 @@ class SWATNet(nn.Module):
         
 
     def creat_vit_blocks(self, scale = SCALE_LIST[0]):
-        repeat_block = lambda x, n : [x for _ in range(n)]
         if scale == SCALE_LIST[0]:
             self.vit_block_e1 = Block(64, 2, patch_w_num = 128, is_SWAT = self.is_swat)
             self.vit_block_e2 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
@@ -377,7 +230,7 @@ class SWATNet(nn.Module):
             self.vit_block_d3 = Block(256, 8, patch_w_num = 32, is_SWAT = self.is_swat)
             self.vit_block_d2 = Block(128, 4, patch_w_num = 64, is_SWAT = self.is_swat)
             self.vit_block_d1 = Block(64, 2, patch_w_num = 128, is_SWAT = self.is_swat)
-        elif scale == 'v4' or scale == SCALE_LIST[1]:
+        elif scale == SCALE_LIST[1]:
             block_e1 = [Block(64, 2, patch_w_num = 128, is_SWAT = True) for i in range(1)]
             block_e2 = [Block(128, 4, patch_w_num = 64, is_SWAT = True) for i in range(2)]
             block_e3 = [Block(256, 8, patch_w_num = 32, is_SWAT = True) for i in range(3)]
