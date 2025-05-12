@@ -1,5 +1,5 @@
 # Road_LGST-Net
-The content is keep updating. The latest code will be released after paper accepted.
+The content is keep updating. The latest code will be released after paper is accepted.
 ## A Quick Overview 
 
 ## Start
