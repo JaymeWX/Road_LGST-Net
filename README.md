@@ -1,5 +1,5 @@
-# Road_SWATNet
-The content is keep updating.
+# Road_LGST-Net
+The content is keep updating. The latest code will be released after paper accepted.
 ## A Quick Overview 
 
 ## Start
