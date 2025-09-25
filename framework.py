@@ -77,8 +77,14 @@ class ModelContainer():
         torch.save(self.net.state_dict(), path)
 
     def load(self, path):
-        state_dict = torch.load(path)
-        self.net.load_state_dict(state_dict)
+        checkpoint = torch.load(path)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            self.net.load_state_dict(checkpoint['model_state_dict'])
+            print(f"Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
+        elif isinstance(checkpoint, dict):
+            self.net.load_state_dict(checkpoint)
+        else:
+            self.net = checkpoint
 
     def update_lr_by_scheduler(self, epoch):
         self.scheduler.step(epoch)

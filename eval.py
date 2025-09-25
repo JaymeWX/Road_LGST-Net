@@ -1,5 +1,7 @@
+
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 import numpy as np
-import torch
 import warnings
 from framework import ModelContainer
 from loss import dice_bce_loss
@@ -9,15 +11,12 @@ from networks.unet import Unet
 from networks.SETR import SETR
 from networks.Unet3plus import UNet_3Plus
 from networks.SegNet import SegNet
-from networks.SWATNet import SWATNet
+from networks.LGSTNet import LGSTNet
 from data import DeepGlobeDataset, RoadDataset
 from torch.utils.data import DataLoader
 import csv
 from PIL import Image
-import os
-from networks.sam import build_road_sam
-from fvcore.nn import FlopCountAnalysis, parameter_count_table
-
+import torch
 warnings.filterwarnings("ignore")
 
 
@@ -79,8 +78,9 @@ def get_deepglobe_testset(img_size):
     return dataset
 
 def get_roadtrace_testset(img_size):
-    ROOT = 'dataset/roadtracer_mydata/1024x1024/'
-    val_data_txt = 'dataset/roadtracer_mydata/test_list_1024.txt'
+    ROOT = '../Road_SWATNet/dataset/roadtracer_mydata/1024x1024/'
+    val_data_txt = '../Road_SWATNet/dataset/roadtracer_mydata/test_list_1024.txt'
+    
     with open(val_data_txt, 'r') as f:
         vallist = [name.replace('\n', '') for name in f.readlines()]
     
@@ -90,8 +90,6 @@ def get_roadtrace_testset(img_size):
 def net_init(model_name, img_size = 512):
     if model_name == 'SETR':
         net = SETR(num_classes=1, image_size=img_size, patch_size=img_size//16, dim=1024, depth = 24, heads = 16, mlp_dim = 2048, out_indices = (9, 14, 19, 23))
-    elif model_name == 'SWATNet':
-        net = SWATNet(scale = 'normal')
     elif model_name == 'DLinkNet':
         net = DinkNet34()
     elif model_name == 'NLLinkNet':
@@ -102,10 +100,16 @@ def net_init(model_name, img_size = 512):
         net = UNet_3Plus()
     elif model_name == 'SegNet':
         net = SegNet()
+    elif model_name == 'LGSTNet':
+        net = LGSTNet()
+        pre_data = torch.randn(1, 3, img_size, img_size)
+        # to initialize weights which created in the running time
+        net(pre_data)
     else:
         print('invaild model name!!')
         return None
     return net
+
 def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_output_mask = True):
     labels = []
     predicts = []
@@ -117,7 +121,6 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
     img_size = 512
     
     net = net_init(model_name, img_size)
-    
     # 加载模型
     solver = ModelContainer(net, dice_bce_loss, 2e-4)
     solver.load(f"weights/{model_weigth}")
@@ -174,18 +177,6 @@ def metrics_eval(model_name, dataset_method, model_weigth, img_size = 512, save_
     print('fwavacc: ', fwavacc)
 
 
-def param_gflops_eval(model_name, img_size = 512):
-    net = net_init(model_name, img_size)
-    net = net.cuda()
-    input = torch.randn(1, 3, img_size, img_size).cuda()  
-
-    # 分析FLOPs
-    flops = FlopCountAnalysis(net, input)
-    print("FLOPs: ", flops.total()/1000000000.0)
-    params = parameter_count_table(net, max_depth=1)
-    print(params)
 
 if __name__ == '__main__':
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
-    metrics_eval('SWATNet', get_roadtrace_testset, '')
-    param_gflops_eval('SWATNet')
+    metrics_eval('LGSTNet', get_roadtrace_testset, 'LGSTNet_roadtrace_debug_v1.pt')

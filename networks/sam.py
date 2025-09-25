@@ -11,7 +11,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from networks.SWATNet_old import ShiftWindAttention
 
 class LayerNorm2d(nn.Module):
     def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
@@ -130,20 +129,12 @@ class Block(nn.Module):
     ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, eps=1e-6)
-        if is_SWAT:
-            self.attn = ShiftWindAttention(
-                dim,
-                heads = num_heads,
-                qkv_bias = qkv_bias,
-                patch_w_num = patch_w_num
-            )
-        else:
-            self.attn = Attention(
-                dim,
-                num_heads = num_heads,
-                qkv_bias = qkv_bias,
-                qk_scale = qk_scale,
-            )
+        self.attn = Attention(
+            dim,
+            num_heads = num_heads,
+            qkv_bias = qkv_bias,
+            qk_scale = qk_scale,
+        )
         self.norm2 = nn.LayerNorm(dim, eps=1e-6)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
